@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/velo
+*.exe
+*.test
+*.out
+.velo/
+coverage.*
+.DS_Store
