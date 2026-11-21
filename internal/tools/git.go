@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -84,12 +83,12 @@ func (t *gitStatusTool) Execute(ctx context.Context, call Call) (Result, error) 
 	if pathArg != "" {
 		argv = append(argv, "--", pathArg)
 	}
-	out, stderr, code, err := runGit(ctx, t.opts.Workspace, argv...)
+	run, err := runGit(ctx, t.opts, argv...)
 	if err != nil {
 		return Result{}, err
 	}
-	out = redactSecretStatus(out)
-	return gitResult(call, "git_status", argv, out, stderr, code), nil
+	run.stdout = redactSecretStatus(run.stdout)
+	return gitResult(call, "git_status", argv, run), nil
 }
 
 type gitDiffTool struct{ opts gitOptions }
@@ -130,7 +129,7 @@ func (t *gitDiffTool) Execute(ctx context.Context, call Call) (Result, error) {
 	if pathArg != "" {
 		argv = append(argv, "--", pathArg)
 	} else {
-		excludes, err := gitSecretDiffPaths(ctx, t.opts.Workspace, args.Staged)
+		excludes, err := gitSecretDiffPaths(ctx, t.opts, args.Staged)
 		if err != nil {
 			return Result{}, err
 		}
@@ -141,14 +140,14 @@ func (t *gitDiffTool) Execute(ctx context.Context, call Call) (Result, error) {
 			}
 		}
 	}
-	out, stderr, code, err := runGit(ctx, t.opts.Workspace, argv...)
+	run, err := runGit(ctx, t.opts, argv...)
 	if err != nil {
 		return Result{}, err
 	}
-	if strings.TrimSpace(out) == "" {
-		out = "(no changes)"
+	if strings.TrimSpace(run.stdout) == "" {
+		run.stdout = "(no changes)"
 	}
-	return gitResult(call, "git_diff", argv, out, stderr, code), nil
+	return gitResult(call, "git_diff", argv, run), nil
 }
 
 type gitLogTool struct{ opts gitOptions }
@@ -202,11 +201,11 @@ func (t *gitLogTool) Execute(ctx context.Context, call Call) (Result, error) {
 	if pathArg != "" {
 		argv = append(argv, "--", pathArg)
 	}
-	out, stderr, code, err := runGit(ctx, t.opts.Workspace, argv...)
+	run, err := runGit(ctx, t.opts, argv...)
 	if err != nil {
 		return Result{}, err
 	}
-	return gitResult(call, "git_log", argv, out, stderr, code), nil
+	return gitResult(call, "git_log", argv, run), nil
 }
 
 type gitBranchTool struct{ opts gitOptions }
@@ -232,11 +231,11 @@ func (t *gitBranchTool) Execute(ctx context.Context, call Call) (Result, error) 
 	if args.All {
 		argv = append(argv, "--all")
 	}
-	out, stderr, code, err := runGit(ctx, t.opts.Workspace, argv...)
+	run, err := runGit(ctx, t.opts, argv...)
 	if err != nil {
 		return Result{}, err
 	}
-	return gitResult(call, "git_branch", argv, out, stderr, code), nil
+	return gitResult(call, "git_branch", argv, run), nil
 }
 
 func gitPath(opts gitOptions, provided string) (string, error) {
@@ -290,17 +289,22 @@ func redactSecretStatus(out string) string {
 
 // gitSecretDiffPaths lists changed files that must be excluded from a
 // repository-wide diff so secret contents are never emitted.
-func gitSecretDiffPaths(ctx context.Context, workspace string, staged bool) ([]string, error) {
+func gitSecretDiffPaths(ctx context.Context, opts gitOptions, staged bool) ([]string, error) {
 	argv := []string{"diff", "--name-only", "-z"}
 	if staged {
 		argv = append(argv, "--cached")
 	}
-	out, _, _, err := runGit(ctx, workspace, argv...)
+	run, err := runGit(ctx, opts, argv...)
 	if err != nil {
 		return nil, err
 	}
+	// A truncated name list could omit a secret path and then let git_diff
+	// print it. Fail closed instead of returning a partial exclude set.
+	if run.stdoutCut {
+		return nil, fmt.Errorf("%w: git name list exceeded %d bytes", ErrInvalidArguments, gitMaxOutputBytes)
+	}
 	var excludes []string
-	for _, name := range strings.Split(out, "\x00") {
+	for _, name := range strings.Split(run.stdout, "\x00") {
 		name = strings.TrimSpace(name)
 		if name == "" || !repository.IsSecretPath(name) {
 			continue
@@ -310,21 +314,40 @@ func gitSecretDiffPaths(ctx context.Context, workspace string, staged bool) ([]s
 	return excludes, nil
 }
 
-func runGit(ctx context.Context, workspace string, argv ...string) (string, string, int, error) {
+// gitMaxOutputBytes caps each of stdout and stderr for a git invocation.
+// git_diff on a large working tree would otherwise buffer without a limit.
+const gitMaxOutputBytes = 256 << 10
+
+type gitRun struct {
+	stdout    string
+	stderr    string
+	code      int
+	stdoutCut bool
+	stderrCut bool
+}
+
+// runGit executes git directly, not through a shell. It requires the execute
+// capability. Shell opt-in is a separate gate: the default config leaves
+// shells disabled and git tools enabled, and git is never invoked via a shell.
+func runGit(ctx context.Context, opts gitOptions, argv ...string) (gitRun, error) {
+	if opts.Policy == nil || !opts.Policy.AllowsExecute() {
+		return gitRun{}, fmt.Errorf("%w: command execution is disabled", ErrDenied)
+	}
 	if _, err := exec.LookPath("git"); err != nil {
-		return "", "", 0, fmt.Errorf("%w: git executable not found: %v", ErrNotFound, err)
+		return gitRun{}, fmt.Errorf("%w: git executable not found: %v", ErrNotFound, err)
 	}
 	all := append([]string{"--no-pager", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false"}, argv...)
 	cmd := exec.CommandContext(ctx, "git", all...)
-	cmd.Dir = workspace
+	cmd.Dir = opts.Workspace
 	cmd.Env = commandEnv(map[string]string{
 		"GIT_PAGER":           "cat",
 		"GIT_TERMINAL_PROMPT": "0",
 		"GIT_OPTIONAL_LOCKS":  "0",
 	})
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitWriter(gitMaxOutputBytes)
+	stderr := newLimitWriter(gitMaxOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	code := 0
 	if err != nil {
@@ -332,28 +355,49 @@ func runGit(ctx context.Context, workspace string, argv ...string) (string, stri
 		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 		} else {
-			return "", "", 0, fmt.Errorf("git: %w", err)
+			return gitRun{}, fmt.Errorf("git: %w", err)
 		}
 	}
 	out := stdout.String()
 	errOut := stderr.String()
 	if code != 0 {
-		return "", "", code, fmt.Errorf("%w: git exited with code %d: %s", ErrInvalidArguments, code, strings.TrimSpace(errOut))
+		return gitRun{}, fmt.Errorf("%w: git exited with code %d: %s", ErrInvalidArguments, code, strings.TrimSpace(errOut))
 	}
 	if strings.TrimSpace(out) == "" && strings.TrimSpace(errOut) != "" {
 		out = errOut
 	}
-	return out, errOut, code, nil
+	return gitRun{
+		stdout:    out,
+		stderr:    errOut,
+		code:      code,
+		stdoutCut: stdout.Truncated(),
+		stderrCut: stderr.Truncated(),
+	}, nil
 }
 
-func gitResult(call Call, name string, argv []string, stdout, stderr string, code int) Result {
-	content := stdout
-	if strings.TrimSpace(stderr) != "" {
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
+func gitResult(call Call, name string, argv []string, run gitRun) Result {
+	var b strings.Builder
+	b.WriteString(run.stdout)
+	if run.stdoutCut {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
 		}
-		content += "stderr:\n" + stderr
+		fmt.Fprintf(&b, "[stdout truncated at %d bytes]\n", gitMaxOutputBytes)
 	}
+	if strings.TrimSpace(run.stderr) != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteString("stderr:\n")
+		b.WriteString(run.stderr)
+	}
+	if run.stderrCut {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "[stderr truncated at %d bytes]\n", gitMaxOutputBytes)
+	}
+	content := b.String()
 	if strings.TrimSpace(content) == "" {
 		content = "(no output)"
 	}
@@ -361,9 +405,11 @@ func gitResult(call Call, name string, argv []string, stdout, stderr string, cod
 		CallID:  call.ID,
 		Content: content,
 		Metadata: map[string]any{
-			"tool":      name,
-			"cmd":       strings.Join(argv, " "),
-			"exit_code": code,
+			"tool":       name,
+			"cmd":        strings.Join(argv, " "),
+			"exit_code":  run.code,
+			"stdout_cut": run.stdoutCut,
+			"stderr_cut": run.stderrCut,
 		},
 	}
 }

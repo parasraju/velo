@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"velo/internal/provider"
 )
 
 var (
@@ -22,11 +24,6 @@ func (c Config) Validate() error {
 
 	if c.App.Workspace == "" {
 		add("app.workspace must not be empty")
-	}
-	switch c.App.LogLevel {
-	case "debug", "info", "warn", "error":
-	default:
-		add("app.log_level must be one of debug, info, warn, error")
 	}
 
 	if c.Agent.MaxTurns <= 0 {
@@ -47,11 +44,6 @@ func (c Config) Validate() error {
 	if c.Agent.MaxOutputTokens < 0 {
 		add("agent.max_output_tokens must be greater than or equal to 0")
 	}
-	switch c.Agent.ActionProfile {
-	case "native", "terminal":
-	default:
-		add("agent.action_profile must be one of native, terminal")
-	}
 
 	if c.Provider.Name == "" {
 		add("provider.name must not be empty")
@@ -68,8 +60,8 @@ func (c Config) Validate() error {
 	if c.Provider.APIKeyEnv != "" && !apiKeyEnvPattern.MatchString(c.Provider.APIKeyEnv) {
 		add("provider.api_key_env must be a valid environment variable name")
 	}
-	if c.Provider.MaxRetries < 0 || c.Provider.MaxRetries > 10 {
-		add("provider.max_retries must be between 0 and 10")
+	if err := provider.CheckMaxRetries(c.Provider.MaxRetries); err != nil {
+		add("provider.max_retries must be between 0 and %d", provider.MaxRetriesLimit)
 	}
 	for name := range c.Provider.Headers {
 		if name == "" || !headerNamePattern.MatchString(name) {
@@ -100,6 +92,9 @@ func (c Config) Validate() error {
 	case "ask", "auto", "deny":
 	default:
 		add("security.default_mode must be one of ask, auto, deny")
+	}
+	if !c.Security.WorkspaceOnly {
+		add("security.workspace_only cannot be disabled")
 	}
 
 	if c.Sessions.Directory == "" {

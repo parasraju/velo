@@ -13,7 +13,6 @@ func TestDefault(t *testing.T) {
 	want := Config{
 		App: AppConfig{
 			Workspace: ".",
-			LogLevel:  "info",
 		},
 		Agent: AgentConfig{
 			MaxTurns:            40,
@@ -22,7 +21,6 @@ func TestDefault(t *testing.T) {
 			ToolTimeout:         Duration(60 * time.Second),
 			TotalTimeout:        Duration(30 * time.Minute),
 			Stream:              true,
-			ActionProfile:       "native",
 			MaxOutputTokens:     4096,
 		},
 		Provider: ProviderConfig{
@@ -41,6 +39,7 @@ func TestDefault(t *testing.T) {
 		},
 		Security: SecurityConfig{
 			DefaultMode:                           "ask",
+			AllowExecute:                          true,
 			AllowShell:                            false,
 			AllowNetwork:                          false,
 			AllowFileWrite:                        true,
@@ -49,7 +48,6 @@ func TestDefault(t *testing.T) {
 		},
 		Sessions: SessionsConfig{
 			Directory: ".velo/sessions",
-			AutoSave:  true,
 		},
 		Tools: ToolsConfig{
 			Enabled: []string{
@@ -64,8 +62,7 @@ func TestDefault(t *testing.T) {
 				"git_diff",
 			},
 		},
-		MCP: MCPConfig{Enabled: false},
-		UI:  UIConfig{Enabled: true, Theme: "dark"},
+		UI: UIConfig{Enabled: true, Theme: "dark"},
 	}
 
 	got := Default()

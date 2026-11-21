@@ -17,9 +17,9 @@ func TestValidateErrors(t *testing.T) {
 			want:   "app.workspace",
 		},
 		{
-			name:   "invalid log level",
-			mutate: func(c *Config) { c.App.LogLevel = "trace" },
-			want:   "app.log_level",
+			name:   "workspace confinement disabled",
+			mutate: func(c *Config) { c.Security.WorkspaceOnly = false },
+			want:   "security.workspace_only",
 		},
 		{
 			name:   "zero max turns",
@@ -45,11 +45,6 @@ func TestValidateErrors(t *testing.T) {
 			name:   "zero total timeout",
 			mutate: func(c *Config) { c.Agent.TotalTimeout = 0 },
 			want:   "agent.total_timeout",
-		},
-		{
-			name:   "invalid action profile",
-			mutate: func(c *Config) { c.Agent.ActionProfile = "other" },
-			want:   "agent.action_profile",
 		},
 		{
 			name:   "empty provider name",
@@ -83,7 +78,7 @@ func TestValidateErrors(t *testing.T) {
 		},
 		{
 			name:   "too many max retries",
-			mutate: func(c *Config) { c.Provider.MaxRetries = 11 },
+			mutate: func(c *Config) { c.Provider.MaxRetries = 6 },
 			want:   "provider.max_retries",
 		},
 		{
@@ -202,9 +197,9 @@ func TestValidateBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "ten retries",
+			name: "five retries",
 			mutate: func(c *Config) {
-				c.Provider.MaxRetries = 10
+				c.Provider.MaxRetries = 5
 			},
 		},
 		{

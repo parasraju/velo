@@ -26,6 +26,11 @@ var schemaRunCommand = json.RawMessage(`{
 
 const defaultCommandOutputBytes = 32 << 10
 
+// commandWaitDelay is how long run_command waits for stdout and stderr to
+// close after the child exits or the context is cancelled. Tests may shorten
+// it. Zero would wait forever, which is the bug this delay exists to close.
+var commandWaitDelay = 2 * time.Second
+
 type runCommandArgs struct {
 	Executable string   `json:"executable"`
 	Args       []string `json:"args"`
@@ -72,6 +77,9 @@ func (t *runCommandTool) Execute(ctx context.Context, call Call) (Result, error)
 	cmd := exec.CommandContext(ctx, args.Executable, args.Args...)
 	cmd.Dir = dir
 	cmd.Env = commandEnv(nil)
+	// WaitDelay unblocks Wait when a grandchild inherited stdout or stderr and
+	// keeps the pipe open after the direct child exits or is cancelled.
+	cmd.WaitDelay = commandWaitDelay
 	setupProcess(cmd)
 	maxBytes := t.outputBytes
 	if maxBytes <= 0 {

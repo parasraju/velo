@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"velo/internal/repository"
 )
 
 func digestOf(content string) string {
@@ -307,5 +309,65 @@ func TestApplyPatchNoHeaders(t *testing.T) {
 	d, _ := newBuiltinHarness(t)
 	if _, err := dispatchBuiltin(t, d, "apply_patch", argsJSON(t, map[string]any{"patch": "not a patch"})); !errors.Is(err, ErrInvalidArguments) {
 		t.Fatalf("expected ErrInvalidArguments, got %v", err)
+	}
+}
+
+func TestWriteFileDeniesSecretCreate(t *testing.T) {
+	d, dir := newBuiltinHarness(t)
+	paths := []string{".env", ".npmrc", "id_rsa", "id_ed25519", "credentials", "secrets.txt", "certs/server.pem", "token.key", "a.p12", "a.pfx"}
+	for _, rel := range paths {
+		_, err := dispatchBuiltin(t, d, "write_file", argsJSON(t, map[string]any{
+			"path":    rel,
+			"content": "secret\n",
+		}))
+		if !errors.Is(err, ErrDenied) {
+			t.Fatalf("create %s: got %v, want ErrDenied", rel, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(statErr) {
+			t.Fatalf("created secret path %s: %v", rel, statErr)
+		}
+	}
+}
+
+func TestWriteFileOverwriteSecret(t *testing.T) {
+	d, dir := newBuiltinHarness(t)
+	writeTestFile(t, dir, ".env", "SECRET=1\n")
+	_, err := dispatchBuiltin(t, d, "write_file", argsJSON(t, map[string]any{
+		"path":            ".env",
+		"content":         "SECRET=2\n",
+		"expected_sha256": digestOf("SECRET=1\n"),
+	}))
+	if !errors.Is(err, repository.ErrSecret) {
+		t.Fatalf("overwrite .env: got %v, want ErrSecret", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(dir, ".env"))
+	if readErr != nil || string(data) != "SECRET=1\n" {
+		t.Fatalf("secret file changed: %q %v", data, readErr)
+	}
+}
+
+func TestApplyPatchDeniesSecretCreate(t *testing.T) {
+	d, dir := newBuiltinHarness(t)
+	patch := "--- /dev/null\n+++ b/.env\n@@ -0,0 +1 @@\n+SECRET=1\n"
+	_, err := dispatchBuiltin(t, d, "apply_patch", argsJSON(t, map[string]any{"patch": patch}))
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("create .env via patch: got %v, want ErrDenied", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".env")); !os.IsNotExist(statErr) {
+		t.Fatalf("patch created .env: %v", statErr)
+	}
+}
+
+func TestApplyPatchOverwriteSecret(t *testing.T) {
+	d, dir := newBuiltinHarness(t)
+	writeTestFile(t, dir, ".env", "SECRET=1\n")
+	patch := "--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-SECRET=1\n+SECRET=2\n"
+	_, err := dispatchBuiltin(t, d, "apply_patch", argsJSON(t, map[string]any{"patch": patch}))
+	if !errors.Is(err, repository.ErrSecret) {
+		t.Fatalf("patch .env: got %v, want ErrSecret", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(dir, ".env"))
+	if readErr != nil || string(data) != "SECRET=1\n" {
+		t.Fatalf("secret file changed: %q %v", data, readErr)
 	}
 }

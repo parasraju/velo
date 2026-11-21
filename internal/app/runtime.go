@@ -95,7 +95,7 @@ func (a *App) buildTools() (*security.Policy, *repository.Repository, *tools.Reg
 func (a *App) buildAllTools() (*security.Policy, *repository.Repository, *tools.Registry, error) {
 	policy, err := security.New(a.workspace,
 		security.WithWrite(a.cfg.Security.AllowFileWrite),
-		security.WithExecute(true),
+		security.WithExecute(a.cfg.Security.AllowExecute),
 		security.WithShell(a.cfg.Security.AllowShell),
 		security.WithNetwork(a.cfg.Security.AllowNetwork),
 	)

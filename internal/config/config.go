@@ -10,13 +10,11 @@ type Config struct {
 	Security SecurityConfig `yaml:"security"`
 	Sessions SessionsConfig `yaml:"sessions"`
 	Tools    ToolsConfig    `yaml:"tools"`
-	MCP      MCPConfig      `yaml:"mcp"`
 	UI       UIConfig       `yaml:"ui"`
 }
 
 type AppConfig struct {
 	Workspace string `yaml:"workspace"`
-	LogLevel  string `yaml:"log_level"`
 }
 
 type AgentConfig struct {
@@ -26,7 +24,6 @@ type AgentConfig struct {
 	ToolTimeout         Duration `yaml:"tool_timeout"`
 	TotalTimeout        Duration `yaml:"total_timeout"`
 	Stream              bool     `yaml:"stream"`
-	ActionProfile       string   `yaml:"action_profile"`
 	// MaxOutputTokens caps the model's response length per turn. Zero leaves
 	// the provider default in place, which is usually far larger than needed
 	// and costs decode time on every turn.
@@ -57,25 +54,31 @@ type ContextConfig struct {
 }
 
 type SecurityConfig struct {
-	DefaultMode                           string `yaml:"default_mode"`
-	AllowShell                            bool   `yaml:"allow_shell"`
-	AllowNetwork                          bool   `yaml:"allow_network"`
-	AllowFileWrite                        bool   `yaml:"allow_file_write"`
-	RequireApprovalForDestructiveCommands bool   `yaml:"require_approval_for_destructive_commands"`
-	WorkspaceOnly                         bool   `yaml:"workspace_only"`
+	DefaultMode string `yaml:"default_mode"`
+	// AllowExecute permits process launches, including git tools and
+	// run_command. Approval policy still applies to run_command.
+	AllowExecute   bool `yaml:"allow_execute"`
+	AllowShell     bool `yaml:"allow_shell"`
+	AllowNetwork   bool `yaml:"allow_network"`
+	AllowFileWrite bool `yaml:"allow_file_write"`
+	// RequireApprovalForDestructiveCommands forces a prompt for destructive
+	// commands even when default_mode is auto. Ask mode already prompts for
+	// every write and command.
+	RequireApprovalForDestructiveCommands bool `yaml:"require_approval_for_destructive_commands"`
+	// WorkspaceOnly must stay true. Path access is always confined to the
+	// workspace; setting this false is a validation error rather than a
+	// silent no-op.
+	WorkspaceOnly bool `yaml:"workspace_only"`
 }
 
 type SessionsConfig struct {
+	// Directory is where session journals are written. Sessions are always
+	// persisted; there is no auto-save switch.
 	Directory string `yaml:"directory"`
-	AutoSave  bool   `yaml:"auto_save"`
 }
 
 type ToolsConfig struct {
 	Enabled []string `yaml:"enabled"`
-}
-
-type MCPConfig struct {
-	Enabled bool `yaml:"enabled"`
 }
 
 // UIConfig controls the interactive terminal interface. VELO stays CLI-first:
@@ -92,7 +95,6 @@ func Default() Config {
 	return Config{
 		App: AppConfig{
 			Workspace: ".",
-			LogLevel:  "info",
 		},
 		Agent: AgentConfig{
 			MaxTurns:            40,
@@ -101,7 +103,6 @@ func Default() Config {
 			ToolTimeout:         Duration(60 * time.Second),
 			TotalTimeout:        Duration(30 * time.Minute),
 			Stream:              true,
-			ActionProfile:       "native",
 			MaxOutputTokens:     4096,
 		},
 		Provider: ProviderConfig{
@@ -120,6 +121,7 @@ func Default() Config {
 		},
 		Security: SecurityConfig{
 			DefaultMode:                           "ask",
+			AllowExecute:                          true,
 			AllowShell:                            false,
 			AllowNetwork:                          false,
 			AllowFileWrite:                        true,
@@ -128,7 +130,6 @@ func Default() Config {
 		},
 		Sessions: SessionsConfig{
 			Directory: ".velo/sessions",
-			AutoSave:  true,
 		},
 		Tools: ToolsConfig{
 			Enabled: []string{
@@ -142,9 +143,6 @@ func Default() Config {
 				"git_status",
 				"git_diff",
 			},
-		},
-		MCP: MCPConfig{
-			Enabled: false,
 		},
 		UI: UIConfig{
 			Enabled: true,

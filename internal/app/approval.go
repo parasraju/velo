@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"velo/internal/events"
@@ -39,7 +41,7 @@ func (a *App) approveTool(ctx context.Context, def tools.Definition, call tools.
 	case "deny":
 		return fmt.Errorf("denied by security.default_mode=deny")
 	case "auto":
-		if destructive {
+		if destructive && a.cfg.Security.RequireApprovalForDestructiveCommands {
 			return a.promptApproval(ctx, def, call)
 		}
 		return nil
@@ -147,16 +149,37 @@ func approvalKey(def tools.Definition, call tools.Call) string {
 	}
 	target := ""
 	for _, field := range []string{"path", "executable", "command"} {
-		if value, ok := args[field].(string); ok && strings.TrimSpace(value) != "" {
-			target = value
-			break
+		value, ok := args[field].(string)
+		if !ok {
+			continue
 		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if field == "path" {
+			value = normalizeTrustPath(value)
+		}
+		target = value
+		break
 	}
 	if target == "" {
 		sum := sha256.Sum256(call.Arguments)
 		target = hex.EncodeToString(sum[:8])
 	}
 	return def.Name + "\x00" + target
+}
+
+// normalizeTrustPath makes equivalent workspace-relative paths share one trust
+// entry. a.txt and ./a.txt are the same file.
+func normalizeTrustPath(value string) string {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	value = path.Clean(value)
+	value = strings.TrimPrefix(value, "./")
+	if value == "" || value == "." {
+		return "."
+	}
+	return value
 }
 
 func describeCall(def tools.Definition, call tools.Call) string {

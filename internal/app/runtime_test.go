@@ -17,6 +17,27 @@ import (
 
 const testTools = "read_file,list_files,search_files,project_structure"
 
+func TestAllowExecuteConfigReachesPolicy(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{workspace: dir, cfg: config.Default()}
+	a.cfg.Security.AllowExecute = false
+	policy, _, _, err := a.buildAllTools()
+	if err != nil {
+		t.Fatalf("build tools: %v", err)
+	}
+	if policy.AllowsExecute() {
+		t.Fatal("allow_execute false still permitted execution")
+	}
+	a.cfg.Security.AllowExecute = true
+	policy, _, _, err = a.buildAllTools()
+	if err != nil {
+		t.Fatalf("build tools: %v", err)
+	}
+	if !policy.AllowsExecute() {
+		t.Fatal("allow_execute true did not permit execution")
+	}
+}
+
 func toolConfig(t *testing.T, dir string) {
 	t.Helper()
 	cfg := testConfig()

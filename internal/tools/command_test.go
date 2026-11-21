@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +24,7 @@ func newCommandHarness(t *testing.T, opts ...security.Option) (*Dispatcher, stri
 	if err != nil {
 		t.Fatalf("new policy: %v", err)
 	}
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestRunCommandRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new policy: %v", err)
 	}
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -116,7 +119,7 @@ func TestRunCommandDeniedWithoutExecuteCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new policy: %v", err)
 	}
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -266,5 +269,80 @@ func TestLimitWriter(t *testing.T) {
 	}
 	if w.String() != "hello" || !w.Truncated() {
 		t.Fatalf("unexpected writer state after second write: %q", w.String())
+	}
+}
+
+func compileMain(t *testing.T, name, src string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module "+name+"\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	out := filepath.Join(dir, name+".exe")
+	cmd := exec.Command("go", "build", "-o", out, ".")
+	cmd.Dir = dir
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build %s: %v\n%s", name, err, combined)
+	}
+	return out
+}
+
+func TestRunCommandWaitDelayUnblocksInheritedPipe(t *testing.T) {
+	requireGo(t)
+	previous := commandWaitDelay
+	commandWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { commandWaitDelay = previous })
+
+	holder := compileMain(t, "holder", `package main
+import ("fmt"; "os"; "strconv"; "time")
+func main() {
+  if len(os.Args) > 1 {
+    _ = os.WriteFile(os.Args[1], []byte(strconv.Itoa(os.Getpid())), 0644)
+  }
+  fmt.Println("held")
+  time.Sleep(30 * time.Second)
+}
+`)
+	parent := compileMain(t, "parent", `package main
+import ("os"; "os/exec")
+func main() {
+  cmd := exec.Command(os.Args[1], os.Args[2:]...)
+  cmd.Stdout = os.Stdout
+  cmd.Stderr = os.Stderr
+  _ = cmd.Start()
+}
+`)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	})
+
+	d, _ := newCommandHarness(t)
+	started := time.Now()
+	_, err := d.Dispatch(context.Background(), Call{
+		ID:   "wait-delay",
+		Name: "run_command",
+		Arguments: json.RawMessage(argsJSON(t, map[string]any{
+			"executable": parent,
+			"args":       []string{holder, pidFile},
+		})),
+	})
+	elapsed := time.Since(started)
+	if elapsed > 5*time.Second {
+		t.Fatalf("run_command stayed blocked for %s (err %v)", elapsed, err)
 	}
 }

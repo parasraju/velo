@@ -36,7 +36,6 @@ var (
 
 type Options struct {
 	Workspace    string
-	NoGit        bool
 	Ignore       []string
 	MaxFileBytes int64
 }
@@ -45,7 +44,6 @@ type Repository struct {
 	Root string
 
 	ignores      []string
-	noGit        bool
 	maxFileBytes int64
 }
 
@@ -143,7 +141,6 @@ func Open(opts Options) (*Repository, error) {
 	return &Repository{
 		Root:         filepath.Clean(root),
 		ignores:      ignores,
-		noGit:        opts.NoGit,
 		maxFileBytes: limit,
 	}, nil
 }

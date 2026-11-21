@@ -87,6 +87,9 @@ func (t *writeFileTool) Execute(ctx context.Context, call Call) (Result, error) 
 	perm := fs.FileMode(0o644)
 	switch {
 	case statErr == nil:
+		if err := secretWriteError(rel, true); err != nil {
+			return Result{}, err
+		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return Result{}, fmt.Errorf("%w: %q is not a regular file", ErrDenied, rel)
 		}
@@ -102,6 +105,9 @@ func (t *writeFileTool) Execute(ctx context.Context, call Call) (Result, error) 
 		}
 		perm = info.Mode().Perm()
 	case os.IsNotExist(statErr):
+		if err := secretWriteError(rel, false); err != nil {
+			return Result{}, err
+		}
 		if expected != "" {
 			return Result{}, fmt.Errorf("%w: %q does not exist, but expected_sha256 was provided", ErrConflict, rel)
 		}
@@ -165,6 +171,20 @@ func deniedWritePath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// secretWriteError blocks secret-named paths. Creating one is a policy denial.
+// Overwriting one returns repository.ErrSecret, the same error ReadFile and
+// HashFile already return, so a stale-content retry cannot be used to replace
+// a protected file.
+func secretWriteError(rel string, exists bool) error {
+	if !repository.IsSecretPath(rel) {
+		return nil
+	}
+	if exists {
+		return fmt.Errorf("%w: %q", repository.ErrSecret, rel)
+	}
+	return fmt.Errorf("%w: creating %q is not allowed", ErrDenied, rel)
 }
 
 func writeAtomic(path string, data []byte, perm fs.FileMode) (err error) {

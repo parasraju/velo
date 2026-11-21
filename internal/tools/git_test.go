@@ -48,7 +48,7 @@ func newGitHarness(t *testing.T) (*Dispatcher, string) {
 	runGitTest(t, dir, "add", "a.txt")
 	runGitTest(t, dir, "commit", "-m", "initial commit")
 
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestGitLogRejectsInvalidLimit(t *testing.T) {
 func TestGitToolsFailOutsideRepository(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -229,5 +229,82 @@ func TestGitStatusRedactsSecretPaths(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "[secret path redacted]") {
 		t.Fatalf("expected redaction marker: %q", res.Content)
+	}
+}
+
+func TestGitToolsDeniedWhenExecuteDisabled(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	runGitTest(t, dir, "init")
+	writeTestFile(t, dir, "a.txt", "alpha\n")
+	runGitTest(t, dir, "add", "a.txt")
+	runGitTest(t, dir, "commit", "-m", "initial commit")
+
+	repo, err := repository.Open(repository.Options{Workspace: dir})
+	if err != nil {
+		t.Fatalf("open repository: %v", err)
+	}
+	policy, err := security.New(dir, security.WithWrite(true))
+	if err != nil {
+		t.Fatalf("new policy: %v", err)
+	}
+	reg := NewRegistry()
+	if err := RegisterBuiltins(reg, BuiltinOptions{Repo: repo, Policy: policy, Workspace: dir}); err != nil {
+		t.Fatalf("register builtins: %v", err)
+	}
+	d, err := NewDispatcher(DispatcherOptions{Registry: reg, Policy: policy})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	for _, name := range []string{"git_status", "git_diff", "git_log", "git_branch"} {
+		_, err := dispatchBuiltin(t, d, name, `{}`)
+		if !errors.Is(err, ErrDenied) {
+			t.Fatalf("%s with execute disabled: got %v, want ErrDenied", name, err)
+		}
+	}
+}
+
+func TestGitDiffCapsLargeOutput(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	runGitTest(t, dir, "init")
+	original := strings.Repeat("a", gitMaxOutputBytes+64<<10)
+	writeTestFile(t, dir, "big.txt", original+"\n")
+	runGitTest(t, dir, "add", "big.txt")
+	runGitTest(t, dir, "commit", "-m", "big")
+	writeTestFile(t, dir, "big.txt", strings.Repeat("b", gitMaxOutputBytes+64<<10)+"\n")
+
+	repo, err := repository.Open(repository.Options{Workspace: dir})
+	if err != nil {
+		t.Fatalf("open repository: %v", err)
+	}
+	policy, err := security.New(dir, security.WithWrite(true), security.WithExecute(true))
+	if err != nil {
+		t.Fatalf("new policy: %v", err)
+	}
+	reg := NewRegistry()
+	if err := RegisterBuiltins(reg, BuiltinOptions{Repo: repo, Policy: policy, Workspace: dir}); err != nil {
+		t.Fatalf("register builtins: %v", err)
+	}
+	d, err := NewDispatcher(DispatcherOptions{
+		Registry:       reg,
+		Policy:         policy,
+		MaxResultBytes: gitMaxOutputBytes + 4096,
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	res, err := dispatchBuiltin(t, d, "git_diff", `{"path":"big.txt"}`)
+	if err != nil {
+		t.Fatalf("git_diff: %v", err)
+	}
+	if !strings.Contains(res.Content, "[stdout truncated at") {
+		t.Fatalf("expected truncation marker, content length %d", len(res.Content))
+	}
+	if len(res.Content) > gitMaxOutputBytes+256 {
+		t.Fatalf("diff length %d exceeds cap %d", len(res.Content), gitMaxOutputBytes)
+	}
+	if res.Metadata["stdout_cut"] != true {
+		t.Fatalf("stdout_cut = %v, want true", res.Metadata["stdout_cut"])
 	}
 }

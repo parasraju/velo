@@ -66,6 +66,22 @@ func (r *Repository) readLimit(maxBytes int64) int64 {
 	return limit
 }
 
+// clampVisible limits a planned read to the bytes actually obtained. A file
+// can shrink between stat and read; slicing the shorter buffer with the old
+// size panics.
+func clampVisible(visible int64, n int) int64 {
+	if visible < 0 {
+		visible = 0
+	}
+	if n < 0 {
+		n = 0
+	}
+	if visible > int64(n) {
+		return int64(n)
+	}
+	return visible
+}
+
 // visibleSize returns how many bytes of a file of the given size are returned
 // to the caller.
 func visibleSize(size, limit int64) int64 {
@@ -104,12 +120,13 @@ func (r *Repository) ReadFile(rel string, maxBytes int64) (File, error) {
 		return File{}, fmt.Errorf("repository: close %q: %w", clean, closeErr)
 	}
 	content = content[:n]
+	visible = clampVisible(visible, len(content))
 	file := File{
 		Path:      clean,
 		Content:   content[:visible],
 		Size:      size,
 		Binary:    contentHasNUL(content),
-		Truncated: size > visible,
+		Truncated: size > int64(len(content)) || size > visible,
 	}
 	if file.Binary {
 		return file, fmt.Errorf("%w: %q", ErrBinary, clean)
@@ -158,15 +175,13 @@ func (r *Repository) ReadFileHashed(rel string, maxBytes int64) (File, string, e
 		return File{}, "", fmt.Errorf("repository: close %q: %w", clean, closeErr)
 	}
 	probe = probe[:kept]
-	if visible > int64(len(probe)) {
-		visible = int64(len(probe))
-	}
+	visible = clampVisible(visible, len(probe))
 	file := File{
 		Path:      clean,
 		Content:   probe[:visible],
 		Size:      size,
 		Binary:    contentHasNUL(probe),
-		Truncated: size > visible,
+		Truncated: size > int64(len(probe)) || size > visible,
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
 	if file.Binary {

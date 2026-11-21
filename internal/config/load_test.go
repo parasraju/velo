@@ -44,6 +44,24 @@ func TestLoadMergesPartialConfigOverDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsRemovedKeys(t *testing.T) {
+	// These knobs were removed because nothing honored them. Keeping them in a
+	// config would look like a setting and do nothing, so decode rejects them.
+	samples := []string{
+		"app:\n  log_level: debug\n",
+		"agent:\n  action_profile: native\n",
+		"sessions:\n  auto_save: true\n",
+		"mcp:\n  enabled: false\n",
+	}
+	for _, content := range samples {
+		path := writeTestFile(t, content)
+		_, err := Load(path, noEnv)
+		if err == nil {
+			t.Fatalf("Load() with %q unexpectedly succeeded", content)
+		}
+	}
+}
+
 func TestLoadRejectsUnknownField(t *testing.T) {
 	path := writeTestFile(t, "agent:\n  mystery: 1\n")
 
@@ -154,7 +172,6 @@ func TestApplyEnvOverrides(t *testing.T) {
 	cfg := Default()
 	lookup := envLookup(map[string]string{
 		"VELO_WORKSPACE":    "workspace",
-		"VELO_LOG_LEVEL":    "debug",
 		"VELO_PROVIDER":     "provider",
 		"VELO_MODEL":        "model",
 		"VELO_BASE_URL":     "https://example.test/v1",
@@ -168,9 +185,6 @@ func TestApplyEnvOverrides(t *testing.T) {
 
 	if cfg.App.Workspace != "workspace" {
 		t.Errorf("App.Workspace = %q", cfg.App.Workspace)
-	}
-	if cfg.App.LogLevel != "debug" {
-		t.Errorf("App.LogLevel = %q", cfg.App.LogLevel)
 	}
 	if cfg.Provider.Name != "provider" {
 		t.Errorf("Provider.Name = %q", cfg.Provider.Name)

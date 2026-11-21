@@ -25,7 +25,7 @@ func TestMilestone2EditRunTestAndDiff(t *testing.T) {
 	runGitTest(t, dir, "add", ".")
 	runGitTest(t, dir, "commit", "-m", "broken add")
 
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}

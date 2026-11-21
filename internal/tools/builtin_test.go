@@ -34,7 +34,7 @@ func newBuiltinHarness(t *testing.T) (*Dispatcher, string) {
 	writeTestFile(t, dir, "sub/b.txt", "first search hit\nno match here\nsecond search hit\n")
 	writeTestFile(t, dir, "sub/deep/c.txt", "deep\n")
 
-	repo, err := repository.Open(repository.Options{Workspace: dir, NoGit: true})
+	repo, err := repository.Open(repository.Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("repository.Open: %v", err)
 	}

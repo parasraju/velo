@@ -117,6 +117,9 @@ func (t *applyPatchTool) Execute(ctx context.Context, call Call) (Result, error)
 		info, statErr := os.Lstat(abs)
 		switch {
 		case statErr == nil:
+			if err := secretWriteError(rel, true); err != nil {
+				return Result{}, err
+			}
 			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 				return Result{}, fmt.Errorf("%w: %q is not a regular file", ErrDenied, rel)
 			}
@@ -135,6 +138,9 @@ func (t *applyPatchTool) Execute(ctx context.Context, call Call) (Result, error)
 				return Result{}, fmt.Errorf("%w: %q already exists", ErrConflict, rel)
 			}
 		case os.IsNotExist(statErr):
+			if err := secretWriteError(rel, false); err != nil {
+				return Result{}, err
+			}
 			if file.oldPath != "" {
 				return Result{}, fmt.Errorf("%w: %q does not exist", ErrConflict, rel)
 			}

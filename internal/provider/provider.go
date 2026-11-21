@@ -2,10 +2,24 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"velo/internal/protocol"
 )
+
+// MaxRetriesLimit is the inclusive upper bound for provider retry counts.
+// Config validation and every provider constructor use this one limit.
+const MaxRetriesLimit = 5
+
+// CheckMaxRetries reports whether n is an allowed retry count. Zero selects
+// the adapter's built-in default.
+func CheckMaxRetries(n int) error {
+	if n < 0 || n > MaxRetriesLimit {
+		return fmt.Errorf("max retries must be between 0 and %d", MaxRetriesLimit)
+	}
+	return nil
+}
 
 type Capabilities struct {
 	Streaming         bool `json:"streaming"`

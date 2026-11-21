@@ -57,8 +57,8 @@ func New(opts provider.Options) (*Provider, error) {
 	if strings.TrimSpace(opts.APIKey) == "" {
 		return nil, protocol.NewProviderError(protocol.ErrAuthentication, providerName, "api key is required")
 	}
-	if opts.MaxRetries < 0 || opts.MaxRetries > 5 {
-		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, "max retries must be between 0 and 5")
+	if err := provider.CheckMaxRetries(opts.MaxRetries); err != nil {
+		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, err.Error())
 	}
 	maxRetries := opts.MaxRetries
 	if maxRetries == 0 {

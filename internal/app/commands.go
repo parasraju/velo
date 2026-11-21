@@ -231,7 +231,7 @@ func (a *App) statusCommand() *cobra.Command {
 					"provider: %s\n"+
 					"model: %s\n"+
 					"sessions: %s (%d sessions)\n"+
-					"security: mode=%s shell=%s network=%s file writes=%s\n"+
+					"security: mode=%s execute=%s shell=%s network=%s file writes=%s\n"+
 					"context budget: in=%d out=%d\n"+
 					"agent: max turns=%d, max tool calls/turn=%d\n"+
 					"go: %s %s/%s\n",
@@ -243,6 +243,7 @@ func (a *App) statusCommand() *cobra.Command {
 				a.cfg.Sessions.Directory,
 				sessions,
 				security.DefaultMode,
+				allowed(security.AllowExecute),
 				allowed(security.AllowShell),
 				allowed(security.AllowNetwork),
 				allowed(security.AllowFileWrite),

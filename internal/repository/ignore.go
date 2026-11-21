@@ -137,7 +137,16 @@ func includeMatches(include, rel, startRel, base string) bool {
 }
 
 func isSecretPath(rel string) bool {
-	base := strings.ToLower(path.Base(strings.ReplaceAll(rel, "\\", "/")))
+	clean := strings.TrimPrefix(strings.ReplaceAll(rel, "\\", "/"), "./")
+	// .velo holds session transcripts and local config. Direct reads are
+	// denied even though directory walks already skip the folder: a model
+	// must not be able to open .velo/sessions/*.jsonl by path.
+	for _, part := range strings.Split(clean, "/") {
+		if strings.EqualFold(part, ".velo") {
+			return true
+		}
+	}
+	base := strings.ToLower(path.Base(clean))
 	if base == "" || base == "." || base == "/" {
 		return false
 	}
@@ -159,6 +168,7 @@ func isSecretPath(rel string) bool {
 }
 
 // IsSecretPath reports whether rel names a file whose contents must never be
-// exposed by tools. Tools that bypass Repository.ReadFile (for example Git
-// diff) must apply the same predicate to their output.
+// exposed by tools. That includes secret file names and anything under .velo,
+// including session transcripts. Tools that bypass Repository.ReadFile (for
+// example Git diff) must apply the same predicate to their output.
 func IsSecretPath(rel string) bool { return isSecretPath(rel) }

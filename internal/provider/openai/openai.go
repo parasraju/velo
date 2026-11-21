@@ -56,11 +56,8 @@ func New(opts provider.Options) (*Provider, error) {
 		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, "base url host is required")
 	}
 
-	if opts.MaxRetries < 0 {
-		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, "max retries must not be negative")
-	}
-	if opts.MaxRetries > 5 {
-		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, "max retries must not exceed 5")
+	if err := provider.CheckMaxRetries(opts.MaxRetries); err != nil {
+		return nil, protocol.NewProviderError(protocol.ErrInvalidRequest, providerName, err.Error())
 	}
 	maxRetries := opts.MaxRetries
 	if maxRetries == 0 {

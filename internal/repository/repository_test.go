@@ -34,7 +34,7 @@ func makeRepoDir(t *testing.T, root, rel string) {
 
 func openRepo(t *testing.T, root string) *Repository {
 	t.Helper()
-	repo, err := Open(Options{Workspace: root, NoGit: true})
+	repo, err := Open(Options{Workspace: root})
 	if err != nil {
 		t.Fatalf("Open(%q): %v", root, err)
 	}
@@ -59,7 +59,7 @@ func nodePaths(nodes []Node) []string {
 
 func TestOpenValidatesWorkspace(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := Open(Options{Workspace: dir, NoGit: true})
+	repo, err := Open(Options{Workspace: dir})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestOpenCopiesIgnorePatterns(t *testing.T) {
 	writeRepoFile(t, dir, "keep.txt", "keep")
 	writeRepoFile(t, dir, "drop.bak", "drop")
 	patterns := []string{"*.bak"}
-	repo, err := Open(Options{Workspace: dir, NoGit: true, Ignore: patterns})
+	repo, err := Open(Options{Workspace: dir, Ignore: patterns})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestIgnoreRules(t *testing.T) {
 	writeRepoFile(t, dir, "__pycache__/m.pyc", "pyc")
 	writeRepoFile(t, dir, ".gitignore", "*.log\n!keep.log\ntmp/\n")
 
-	repo, err := Open(Options{Workspace: dir, NoGit: true, Ignore: []string{"*.bak"}})
+	repo, err := Open(Options{Workspace: dir, Ignore: []string{"*.bak"}})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -723,5 +723,36 @@ func TestPathEscapeRejection(t *testing.T) {
 	}
 	if !reflect.DeepEqual(nodePaths(nodes), []string{"a.txt"}) {
 		t.Fatalf("default structure = %v", nodePaths(nodes))
+	}
+}
+
+func TestReadFileClampsWhenShorterThanStat(t *testing.T) {
+	// ReadFile slices with the stat size. A shrink between stat and read used
+	// to panic; clampVisible is the shared guard for that short read.
+	buf := []byte("short")
+	visible := clampVisible(visibleSize(10_000, 10_000), len(buf))
+	got := buf[:visible]
+	if string(got) != "short" {
+		t.Fatalf("clamped content = %q", got)
+	}
+	if clampVisible(-1, 4) != 0 {
+		t.Fatal("negative visible was not clamped to zero")
+	}
+}
+
+func TestVeloTranscriptsAreSecret(t *testing.T) {
+	dir := t.TempDir()
+	writeRepoFile(t, dir, ".velo/sessions/abc.jsonl", "session secret\n")
+	writeRepoFile(t, dir, "ok.txt", "visible\n")
+	repo := openRepo(t, dir)
+	if _, err := repo.ReadFile(".velo/sessions/abc.jsonl", 0); !errors.Is(err, ErrSecret) {
+		t.Fatalf("transcript read = %v, want ErrSecret", err)
+	}
+	if _, err := repo.HashFile(".velo/sessions/abc.jsonl"); !errors.Is(err, ErrSecret) {
+		t.Fatalf("transcript hash = %v, want ErrSecret", err)
+	}
+	file, err := repo.ReadFile("ok.txt", 0)
+	if err != nil || string(file.Content) != "visible\n" {
+		t.Fatalf("ok.txt = %q, %v", file.Content, err)
 	}
 }
