@@ -134,6 +134,22 @@ func ErrorFromContext(provider string, err error) *ProviderError {
 	return e
 }
 
+var (
+	// ErrStreamIncomplete is returned when a stream ends before an explicit
+	// terminal done event. A partial body is not a successful completion.
+	ErrStreamIncomplete = errors.New("protocol: stream ended before a terminal done event")
+	// ErrContentFiltered is a model refusal. It is never a completed answer.
+	ErrContentFiltered = errors.New("protocol: response refused by content filter")
+	// ErrFinishError is the model's own error finish reason.
+	ErrFinishError = errors.New("protocol: model reported an error finish")
+	// ErrFinishUnknown is any finish reason the runtime does not recognize.
+	ErrFinishUnknown = errors.New("protocol: unknown finish reason")
+	// ErrTruncated is returned when a length finish produced no usable text
+	// or stopped in the middle of a tool call. A length finish that still
+	// produced text completes with Result.Truncated set instead.
+	ErrTruncated = errors.New("protocol: response truncated by output length")
+)
+
 func IsRetryable(err error) bool {
 	var pe *ProviderError
 	if errors.As(err, &pe) {

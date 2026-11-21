@@ -86,6 +86,11 @@ func (b *StreamBuilder) Response() (*Response, error) {
 		}
 		return nil, NewProviderError(ErrProtocol, "", "stream builder: failed without error")
 	}
+	// An explicit done event is the only successful terminal. EOF, a dropped
+	// connection, or a builder that never saw done is incomplete.
+	if !b.done {
+		return nil, ErrStreamIncomplete
+	}
 
 	msg := Message{Role: RoleAssistant}
 	if b.text.Len() > 0 {
@@ -115,15 +120,14 @@ func (b *StreamBuilder) Response() (*Response, error) {
 	}
 
 	finish := b.finish
+	// A done event with no finish reason still completes. Tool calls infer
+	// tool_calls; anything else is a normal stop. This is not a substitute
+	// for a missing done event.
 	if !b.finishExplicit && len(indexes) > 0 {
 		finish = FinishToolCalls
 	}
 	if finish == "" {
-		if len(indexes) > 0 {
-			finish = FinishToolCalls
-		} else {
-			finish = FinishStop
-		}
+		finish = FinishStop
 	}
 
 	resp := &Response{

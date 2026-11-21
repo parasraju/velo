@@ -6,10 +6,11 @@ import "sync"
 // as an Emitter (Emit is a no-op), which keeps producers free of nil checks
 // on the happy path.
 //
-// Publish semantics: each subscriber owns a buffered channel. Emit blocks per
-// subscriber until the event is accepted or the subscriber is closed, so a
-// slow or gone consumer can never block the run forever and a live consumer
-// never silently loses events.
+// Publish semantics: each subscriber owns a buffered channel. Emit never
+// blocks. When a subscriber's buffer is full the new event is dropped
+// (drop-newest) so a slow consumer cannot stall the agent loop. A subscriber
+// that keeps up does not lose events. Send and close share a per-subscriber
+// mutex, so Emit cannot send on a closed channel.
 type Relay struct {
 	mu     sync.Mutex
 	subs   map[*relaySub]struct{}
@@ -19,9 +20,9 @@ type Relay struct {
 }
 
 type relaySub struct {
-	ch   chan Event
-	done chan struct{}
-	once sync.Once
+	mu     sync.Mutex
+	ch     chan Event
+	closed bool
 }
 
 func NewRelay() *Relay {
@@ -41,8 +42,7 @@ func (r *Relay) Subscribe(buf int) (<-chan Event, func()) {
 		buf = 256
 	}
 	sub := &relaySub{
-		ch:   make(chan Event, buf),
-		done: make(chan struct{}),
+		ch: make(chan Event, buf),
 	}
 	r.mu.Lock()
 	if r.closed {
@@ -59,10 +59,7 @@ func (r *Relay) Subscribe(buf int) (<-chan Event, func()) {
 			r.mu.Lock()
 			delete(r.subs, sub)
 			r.mu.Unlock()
-			sub.once.Do(func() {
-				close(sub.done)
-				close(sub.ch)
-			})
+			sub.close()
 		})
 	}
 	return sub.ch, cancel
@@ -98,11 +95,32 @@ func (r *Relay) Emit(e Event) {
 	}
 	r.mu.Unlock()
 	for _, sub := range subs {
-		select {
-		case sub.ch <- e:
-		case <-sub.done:
-		}
+		sub.send(e)
 	}
+}
+
+// send delivers e unless the subscriber is closed or its buffer is full.
+// A full buffer drops e (drop-newest) and returns immediately.
+func (s *relaySub) send(e Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- e:
+	default:
+	}
+}
+
+func (s *relaySub) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.ch)
 }
 
 // Close releases every subscriber.
@@ -119,9 +137,6 @@ func (r *Relay) Close() {
 	r.closed = true
 	r.mu.Unlock()
 	for _, sub := range subs {
-		sub.once.Do(func() {
-			close(sub.done)
-			close(sub.ch)
-		})
+		sub.close()
 	}
 }

@@ -85,13 +85,22 @@ func (s *sseStream) Recv() (protocol.StreamEvent, error) {
 		if err == nil {
 			continue
 		}
+		// Cancellation closes the body, which surfaces as a read error or EOF.
+		// Return the context error itself so a partial stream is never success.
+		if ctxErr := s.ctx.Err(); ctxErr != nil {
+			return protocol.StreamEvent{}, protocol.ErrorFromContext(providerName, ctxErr)
+		}
 		if s.isClosed() {
 			s.done = true
 			return protocol.StreamEvent{}, io.EOF
 		}
 		if errors.Is(err, io.EOF) {
+			// Transport EOF before a terminal done event is incomplete.
+			// Do not synthesize done(stop).
+			if !s.doneQueued {
+				s.err = protocol.ErrStreamIncomplete
+			}
 			s.finished = true
-			s.enqueueDone()
 			continue
 		}
 		s.err = err

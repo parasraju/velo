@@ -70,6 +70,10 @@ type Result struct {
 	Usage              *protocol.Usage
 	Verification       VerificationStatus
 	VerificationDetail string
+	// Truncated is set when the model stopped because it hit the output
+	// length limit but still produced text. Status is completed, and this
+	// flag is what keeps that completion from being unqualified.
+	Truncated bool
 }
 
 type Agent struct {
@@ -100,6 +104,7 @@ type Agent struct {
 	content             string
 	verification        VerificationStatus
 	verificationDetail  string
+	truncated           bool
 }
 
 func New(opts Options) (*Agent, error) {
@@ -185,6 +190,12 @@ func (a *Agent) Run(ctx context.Context, objective string) (Result, error) {
 	a.compactor.Reset()
 	a.publish(events.Event{Kind: events.RunStarted, Objective: objective})
 
+	// A killed run can leave an assistant tool call without results. Repair
+	// that before appending the new user message so the transcript stays valid.
+	if err := a.recoverDangling(); err != nil {
+		return a.fail(err)
+	}
+
 	if a.totalTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, a.totalTimeout)
@@ -255,31 +266,33 @@ func (a *Agent) Run(ctx context.Context, objective string) (Result, error) {
 			return a.fail(fmt.Errorf("agent: append model response event: %w", err))
 		}
 		if err := a.transitionState(StateProcessingResults); err != nil {
-			return a.result(StateFailed), err
+			return a.fail(err)
 		}
 
 		calls := resp.Message.ToolCalls()
-		if len(calls) == 0 {
-			text := resp.Message.Text()
-			if strings.TrimSpace(text) == "" {
-				return a.fail(fmt.Errorf("agent: empty response from model"))
+		switch resp.FinishReason {
+		case protocol.FinishContentFilter:
+			return a.fail(fmt.Errorf("agent: %w", protocol.ErrContentFiltered))
+		case protocol.FinishError:
+			return a.fail(fmt.Errorf("agent: %w", protocol.ErrFinishError))
+		case protocol.FinishUnknown:
+			return a.fail(fmt.Errorf("agent: %w", protocol.ErrFinishUnknown))
+		case protocol.FinishLength:
+			// A truncated tool call is not safe to run. Text-only length
+			// finishes complete with the truncation flag set.
+			if len(calls) > 0 || strings.TrimSpace(resp.Message.Text()) == "" {
+				return a.fail(fmt.Errorf("agent: %w", protocol.ErrTruncated))
 			}
-			a.content = text
-			a.verification = VerificationUnverified
-			a.verificationDetail = "no verification checks were executed"
-			if err := a.transitionState(StateVerifying); err != nil {
-				return a.result(StateFailed), err
+			return a.completeTurn(resp.Message.Text(), true)
+		case protocol.FinishStop, protocol.FinishToolCalls:
+			if len(calls) == 0 {
+				if resp.FinishReason == protocol.FinishToolCalls {
+					return a.fail(fmt.Errorf("agent: finish reason tool_calls but response has no tool calls"))
+				}
+				return a.completeTurn(resp.Message.Text(), false)
 			}
-			if err := a.session.AppendEvent("verification", map[string]any{
-				"status": string(a.verification),
-				"detail": a.verificationDetail,
-			}); err != nil {
-				return a.fail(fmt.Errorf("agent: append verification event: %w", err))
-			}
-			if err := a.transitionState(StateCompleted); err != nil {
-				return a.result(StateFailed), err
-			}
-			return a.result(StateCompleted), nil
+		default:
+			return a.fail(fmt.Errorf("agent: %w", protocol.ErrFinishUnknown))
 		}
 
 		if len(calls) > a.maxToolCallsPerTurn {
@@ -601,23 +614,144 @@ func (a *Agent) handleRequestError(err error) (Result, error) {
 
 func (a *Agent) cancel(cause error) (Result, error) {
 	a.cause = cause
+	if err := a.closeDangling(danglingNote(cause)); err != nil {
+		a.cause = errors.Join(cause, err)
+	}
 	state := a.machine.State()
 	if !state.Terminal() {
 		if err := a.transitionState(StateCancelled); err != nil {
 			return a.result(StateCancelled), err
 		}
 	}
-	return a.result(StateCancelled), cause
+	return a.result(StateCancelled), a.cause
 }
 
 func (a *Agent) fail(cause error) (Result, error) {
 	a.cause = cause
+	if err := a.closeDangling(danglingNote(cause)); err != nil {
+		a.cause = errors.Join(cause, err)
+	}
 	if !a.machine.State().Terminal() {
 		if err := a.transitionState(StateFailed); err != nil {
-			return a.result(StateFailed), err
+			return a.result(StateFailed), a.cause
 		}
 	}
-	return a.result(StateFailed), cause
+	return a.result(StateFailed), a.cause
+}
+
+// completeTurn records an assistant answer that ends the run. truncated is
+// set only for a length finish that still produced text; every other
+// successful finish is an unqualified completion.
+func (a *Agent) completeTurn(text string, truncated bool) (Result, error) {
+	if strings.TrimSpace(text) == "" {
+		return a.fail(fmt.Errorf("agent: empty response from model"))
+	}
+	a.content = text
+	a.truncated = truncated
+	a.verification = VerificationUnverified
+	a.verificationDetail = "no verification checks were executed"
+	if truncated {
+		a.verificationDetail += "; output truncated at the length limit"
+	}
+	if err := a.transitionState(StateVerifying); err != nil {
+		return a.result(StateFailed), err
+	}
+	if err := a.session.AppendEvent("verification", map[string]any{
+		"status":    string(a.verification),
+		"detail":    a.verificationDetail,
+		"truncated": truncated,
+	}); err != nil {
+		return a.fail(fmt.Errorf("agent: append verification event: %w", err))
+	}
+	if err := a.transitionState(StateCompleted); err != nil {
+		return a.result(StateFailed), err
+	}
+	return a.result(StateCompleted), nil
+}
+
+// recoverDangling runs at the start of a resumed session. Outstanding tool
+// calls are closed with explicit cancelled results, and the state machine
+// records interrupted → recovery_required before the run continues.
+func (a *Agent) recoverDangling() error {
+	calls := outstandingToolCalls(a.session.Messages())
+	if len(calls) == 0 {
+		return nil
+	}
+	if !a.machine.State().Terminal() {
+		if err := a.transitionState(StateInterrupted); err != nil {
+			return err
+		}
+		if err := a.transitionState(StateRecoveryRequired); err != nil {
+			return err
+		}
+	}
+	if err := a.appendCancelledResults(calls, "cancelled: recovered unanswered tool call"); err != nil {
+		return err
+	}
+	return a.session.AppendEvent("recovery", map[string]any{
+		"status": string(StateRecoveryRequired),
+		"calls":  len(calls),
+	})
+}
+
+func (a *Agent) closeDangling(note string) error {
+	return a.appendCancelledResults(outstandingToolCalls(a.session.Messages()), note)
+}
+
+func (a *Agent) appendCancelledResults(calls []protocol.ToolCall, note string) error {
+	for _, call := range calls {
+		msg := protocol.Message{
+			Role:             protocol.RoleTool,
+			ToolCallID:       call.ID,
+			Name:             call.Name,
+			ThoughtSignature: call.ThoughtSignature,
+			Content:          []protocol.Content{protocol.TextContent(note)},
+		}
+		if err := a.session.AppendMessage(msg); err != nil {
+			return fmt.Errorf("agent: append cancelled tool result: %w", err)
+		}
+	}
+	return nil
+}
+
+func danglingNote(cause error) string {
+	switch {
+	case errors.Is(cause, context.Canceled), errors.Is(cause, context.DeadlineExceeded):
+		return "cancelled: tool call was not executed"
+	case errors.Is(cause, protocol.ErrContentFiltered):
+		return "cancelled: response refused by content filter"
+	case errors.Is(cause, protocol.ErrTruncated):
+		return "cancelled: response truncated before tool execution"
+	case errors.Is(cause, protocol.ErrFinishError), errors.Is(cause, protocol.ErrFinishUnknown):
+		return "cancelled: model finish did not execute the tool call"
+	default:
+		return "cancelled: tool call was not executed"
+	}
+}
+
+// outstandingToolCalls returns assistant tool calls that have no later tool
+// result message. Order follows the transcript.
+func outstandingToolCalls(messages []protocol.Message) []protocol.ToolCall {
+	answered := make(map[string]int)
+	for _, m := range messages {
+		if m.Role == protocol.RoleTool && strings.TrimSpace(m.ToolCallID) != "" {
+			answered[m.ToolCallID]++
+		}
+	}
+	var pending []protocol.ToolCall
+	for _, m := range messages {
+		if m.Role != protocol.RoleAssistant {
+			continue
+		}
+		for _, call := range m.ToolCalls() {
+			if answered[call.ID] > 0 {
+				answered[call.ID]--
+				continue
+			}
+			pending = append(pending, call)
+		}
+	}
+	return pending
 }
 
 // publish sends one event to the sink, stamping time and session id. Sinks
@@ -640,6 +774,7 @@ func (a *Agent) result(status State) Result {
 		ToolCalls:          a.toolCalls,
 		Verification:       a.verification,
 		VerificationDetail: a.verificationDetail,
+		Truncated:          a.truncated,
 	}
 	if a.usageSet {
 		usage := a.usage
@@ -668,6 +803,7 @@ func (a *Agent) publishFinish(res Result) {
 		Usage:              res.Usage,
 		Verification:       string(res.Verification),
 		VerificationDetail: res.VerificationDetail,
+		Truncated:          res.Truncated,
 	}
 	if a.cause != nil {
 		summary.Error = a.cause.Error()

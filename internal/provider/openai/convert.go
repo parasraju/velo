@@ -357,6 +357,8 @@ func mapFinishReason(reason string) protocol.FinishReason {
 		return protocol.FinishToolCalls
 	case "content_filter":
 		return protocol.FinishContentFilter
+	case "error":
+		return protocol.FinishError
 	default:
 		return protocol.FinishUnknown
 	}

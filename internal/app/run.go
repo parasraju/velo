@@ -157,6 +157,9 @@ func (a *App) runWithRuntime(ctx context.Context, rt *runtimeEnv, sess *session.
 func (a *App) printResult(result agent.Result) {
 	fmt.Fprintf(a.stdout, "session: %s\n", result.SessionID)
 	fmt.Fprintf(a.stdout, "status: %s\n", result.Status)
+	if result.Truncated {
+		fmt.Fprintln(a.stdout, "truncated: output hit the length limit")
+	}
 	fmt.Fprintf(a.stdout, "turns: %d | tool calls: %d\n", result.Turns, result.ToolCalls)
 	if result.Usage != nil {
 		fmt.Fprintf(a.stdout, "usage: input=%d output=%d total=%d\n",

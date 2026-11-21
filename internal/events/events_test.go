@@ -109,6 +109,61 @@ func TestRelayMultipleSubscribersAndClose(t *testing.T) {
 	r.Emit(Event{Kind: TextDelta, Delta: "y"}) // after Close: sinks still fire, subs gone
 }
 
+func TestRelaySlowConsumerDoesNotBlock(t *testing.T) {
+	r := NewRelay()
+	_, cancel := r.Subscribe(1)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			r.Emit(Event{Kind: TextDelta, Delta: "x"})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Emit blocked on a full subscriber")
+	}
+}
+
+func TestRelayEmitCloseRace(t *testing.T) {
+	for n := 0; n < 40; n++ {
+		r := NewRelay()
+		var chans []<-chan Event
+		var cancels []func()
+		for i := 0; i < 4; i++ {
+			ch, cancel := r.Subscribe(1)
+			chans = append(chans, ch)
+			cancels = append(cancels, cancel)
+		}
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 80; i++ {
+				r.Emit(Event{Kind: TextDelta, Delta: "x"})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for _, cancel := range cancels {
+				cancel()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			r.Close()
+		}()
+		wg.Wait()
+		for _, ch := range chans {
+			for range ch {
+			}
+		}
+	}
+}
+
 func TestRecorder(t *testing.T) {
 	r := &Recorder{}
 	r.Emit(Event{Kind: RunStarted})

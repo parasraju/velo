@@ -98,6 +98,8 @@ type RunSummary struct {
 	Verification       string
 	VerificationDetail string
 	Error              string
+	// Truncated reports a length-limit completion. Status stays "completed".
+	Truncated bool
 }
 
 // Event is one immutable notification on the run stream. Exactly the fields

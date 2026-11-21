@@ -86,10 +86,10 @@ func demoSteps() []Step {
 			Usage: &protocol.Usage{InputTokens: 900, OutputTokens: 88},
 		},
 		{
-			Text:      "## Demo complete\n\nThis is the **offline demo model** (`provider.name: mock`). It replays the same script for every task, with streamed deltas, tool blocks, and one approval prompt.\n\n- `ctrl+o` expands the last tool block\n- `:sessions` opens the session picker\n- `:help` lists every binding\n\nSet a real provider key and rerun `velo` to put the actual agent to work.",
-			ChunkSize: 6,
+			Text:         "## Demo complete\n\nThis is the **offline demo model** (`provider.name: mock`). It replays the same script for every task, with streamed deltas, tool blocks, and one approval prompt.\n\n- `ctrl+o` expands the last tool block\n- `:sessions` opens the session picker\n- `:help` lists every binding\n\nSet a real provider key and rerun `velo` to put the actual agent to work.",
+			ChunkSize:    6,
 			FinishReason: protocol.FinishStop,
-			Usage:     &protocol.Usage{InputTokens: 1400, OutputTokens: 210},
+			Usage:        &protocol.Usage{InputTokens: 1400, OutputTokens: 210},
 		},
 	}
 }
