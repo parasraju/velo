@@ -51,6 +51,38 @@ func (a *App) sessionsCommand() *cobra.Command {
 				return a.printSession(store, args[0])
 			},
 		},
+		&cobra.Command{
+			Use:   "delete <id>",
+			Short: "Delete a saved session",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, err := a.sessionStore()
+				if err != nil {
+					return err
+				}
+				if err := store.Delete(args[0]); err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(a.stdout, "deleted session %s\n", args[0])
+				return err
+			},
+		},
+		&cobra.Command{
+			Use:   "archive <id>",
+			Short: "Archive a saved session without deleting its journal",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, err := a.sessionStore()
+				if err != nil {
+					return err
+				}
+				if err := store.Archive(args[0]); err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(a.stdout, "archived session %s\n", args[0])
+				return err
+			},
+		},
 	)
 	return cmd
 }

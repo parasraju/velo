@@ -131,6 +131,10 @@ func (c *tuiController) Info() ui.Info {
 
 func (c *tuiController) Events() <-chan events.Event { return c.sub }
 
+func (c *tuiController) Report(name string) (string, error) {
+	return c.app.report(name)
+}
+
 // Run executes one objective. It is called from the UI's run goroutine and
 // returns when the agent stops; rendering keys off the event stream.
 func (c *tuiController) Run(ctx context.Context, objective string) error {

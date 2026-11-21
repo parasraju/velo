@@ -21,8 +21,12 @@ type block struct {
 
 	// text holds user input, assistant markdown source, or system notices.
 	text string
-	// rendered caches the styled/marked-up form of text for finalized blocks.
+	// rendered caches the styled markdown body of a finalized assistant block.
 	rendered string
+	// view caches the full block rendering at viewWidth so a later event does
+	// not restyle unchanged history.
+	view      string
+	viewWidth int
 
 	// tool carries tool-block state (name, status, args, output).
 	tool *events.Tool
@@ -55,14 +59,30 @@ func (b block) toolLine(th Theme) string {
 		return ""
 	}
 	status := b.tool.Status
-	icon := "·"
+	ascii := th.Name == "notty"
+	icon := "*"
+	if !ascii {
+		icon = "·"
+	}
 	switch status {
 	case "running", "requested":
-		icon = "…"
+		if ascii {
+			icon = "..."
+		} else {
+			icon = "…"
+		}
 	case "succeeded", "approved", "trusted", "done":
-		icon = "✓"
+		if ascii {
+			icon = "ok"
+		} else {
+			icon = "✓"
+		}
 	case "failed", "denied":
-		icon = "✗"
+		if ascii {
+			icon = "x"
+		} else {
+			icon = "✗"
+		}
 	}
 	statusStyle := th.Dim
 	switch icon {
@@ -73,7 +93,11 @@ func (b block) toolLine(th Theme) string {
 	case "…":
 		statusStyle = th.Warning
 	}
-	label := th.ToolLabel.Render("⚙ " + b.tool.Name)
+	mark := ""
+	if !ascii {
+		mark = "⚙ "
+	}
+	label := th.ToolLabel.Render(mark + b.tool.Name)
 	meta := statusStyle.Render(icon + " " + status)
 	detail := toolDetail(b.tool)
 	parts := []string{label}

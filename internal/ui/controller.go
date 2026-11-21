@@ -68,6 +68,8 @@ type Controller interface {
 	Transcript() ([]protocol.Message, error)
 	// NewSession starts a fresh session and reports its info.
 	NewSession() (Info, error)
+	// Report returns a plain-text view named status, config, models, or tools.
+	Report(name string) (string, error)
 	// Cancel aborts the in-flight run, if any.
 	Cancel()
 	// Shutdown releases controller resources and closes the Events channel so

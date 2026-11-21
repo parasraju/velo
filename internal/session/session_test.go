@@ -432,6 +432,30 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestArchiveHidesSessionWithoutDeletingTheJournal(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.Create("old", "ws"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Archive("old"); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("archived session still listed: %+v", list)
+	}
+	if _, err := s.Open("old"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Open archived = %v, want ErrSessionNotFound", err)
+	}
+	archived := filepath.Join(s.Root(), "old.jsonl.archived")
+	if _, err := os.Stat(archived); err != nil {
+		t.Fatalf("archived journal missing: %v", err)
+	}
+}
+
 func TestCompact(t *testing.T) {
 	s := newStore(t)
 	sess, err := s.Create("compact", "ws")

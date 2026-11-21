@@ -90,6 +90,10 @@ func (f *fakeController) Transcript() ([]protocol.Message, error) {
 	return f.transcript, nil
 }
 
+func (f *fakeController) Report(name string) (string, error) {
+	return name + " report", nil
+}
+
 func (f *fakeController) NewSession() (Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -169,7 +173,7 @@ func TestModelRendersStreamedAnswer(t *testing.T) {
 	if !strings.Contains(view, "idle") {
 		t.Errorf("view should show idle after run finished:\n%s", view)
 	}
-	if !strings.Contains(view, "10↑") {
+	if !strings.Contains(view, "10^") {
 		t.Errorf("view missing usage:\n%s", view)
 	}
 	if m.running {
@@ -333,9 +337,24 @@ func TestModelCommands(t *testing.T) {
 		if !strings.Contains(view, "commands") || !strings.Contains(view, ":sessions") {
 			t.Errorf("help view incomplete:\n%s", view)
 		}
+		for _, alias := range []string{":exit", ":q", ":s", ":status", ":config", ":models", ":tools"} {
+			if !strings.Contains(view, alias) {
+				t.Errorf("help missing %s:\n%s", alias, view)
+			}
+		}
 		m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 		if m.showHelp {
 			t.Error("any key should close help")
+		}
+	})
+
+	t.Run("reports", func(t *testing.T) {
+		_, m := newTestModel(t)
+		m.input.SetValue(":status")
+		m, _ = enter(t, m)
+		view := stripANSI(m.View())
+		if !strings.Contains(view, "status report") {
+			t.Fatalf("status report missing:\n%s", view)
 		}
 	})
 
@@ -456,5 +475,72 @@ func TestModelStatusBarShowsContext(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("status/transcript missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestModelKeepsDraftWhileRunning(t *testing.T) {
+	_, m := newTestModel(t)
+	m.running = true
+	m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	if !strings.Contains(m.input.Value(), "h") {
+		t.Fatalf("draft = %q", m.input.Value())
+	}
+	m.input.SetValue("keep me")
+	m, _ = enter(t, m)
+	if m.input.Value() != "keep me" {
+		t.Fatalf("draft cleared: %q", m.input.Value())
+	}
+	if !strings.Contains(m.notice, "run is in progress") {
+		t.Fatalf("notice = %q", m.notice)
+	}
+}
+
+func TestApprovalKeystrokeIsNotSilent(t *testing.T) {
+	_, m := newTestModel(t)
+	m.pending = &events.Tool{ID: "a", Name: "run_command"}
+	m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if m.pending == nil {
+		t.Fatal("unknown key cleared the approval")
+	}
+	if !strings.Contains(m.notice, "press y") {
+		t.Fatalf("notice = %q", m.notice)
+	}
+}
+
+func TestNarrowStatusOmitsDetail(t *testing.T) {
+	_, m := newTestModel(t)
+	m.width = 8
+	status := stripANSI(m.renderStatus())
+	if strings.Contains(status, "mock-model") {
+		t.Fatalf("narrow status overflowed: %q", status)
+	}
+	m.width = 4
+	_ = m.View()
+}
+
+func TestNottyViewIsASCII(t *testing.T) {
+	_, m := newTestModel(t)
+	view := m.View()
+	for _, mark := range []string{"─", "⚠", "●", "⌅", "⚙", "╲"} {
+		if strings.Contains(view, mark) {
+			t.Fatalf("notty view contains %q", mark)
+		}
+	}
+}
+
+func TestLightRuleIsNotNearWhite(t *testing.T) {
+	out := NewTheme("light").Rule.Render("-")
+	if strings.Contains(out, "38;5;252") {
+		t.Fatalf("light rule color is 252: %q", out)
+	}
+}
+
+func TestTranscriptBlocksAreBounded(t *testing.T) {
+	_, m := newTestModel(t)
+	for i := 0; i < maxTranscriptBlocks+25; i++ {
+		m.appendSystem("n")
+	}
+	if len(m.blocks) > maxTranscriptBlocks {
+		t.Fatalf("blocks = %d, bound %d", len(m.blocks), maxTranscriptBlocks)
 	}
 }

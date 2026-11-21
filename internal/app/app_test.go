@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"velo/internal/config"
+	"velo/internal/provider"
+	"velo/internal/provider/mock"
 )
 
 func testLookup(env map[string]string) func(string) (string, bool) {
@@ -81,6 +84,17 @@ func TestVersion(t *testing.T) {
 	}
 	if !strings.Contains(stdout, runtime.GOOS+"/"+runtime.GOARCH) {
 		t.Fatalf("expected platform in output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "commit: unknown") || !strings.Contains(stdout, "built: unknown") {
+		t.Fatalf("expected build metadata, got %q", stdout)
+	}
+
+	stdout, _, err = run(t, dir, nil, "--version")
+	if err != nil {
+		t.Fatalf("--version: %v", err)
+	}
+	if !strings.Contains(stdout, "velo test") || !strings.Contains(stdout, "commit: unknown") {
+		t.Fatalf("expected --version output, got %q", stdout)
 	}
 }
 
@@ -157,6 +171,46 @@ func TestProviders(t *testing.T) {
 	}
 }
 
+func TestProvidersPrintErrorsOutsideTheTable(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, testConfig())
+	reg := provider.NewRegistry()
+	if err := reg.Register("mock", func(o provider.Options) (provider.Provider, error) {
+		return mock.New("mock", o.Model), nil
+	}); err != nil {
+		t.Fatalf("register mock: %v", err)
+	}
+	if err := reg.Register("broken", func(provider.Options) (provider.Provider, error) {
+		return nil, errors.New("refused")
+	}); err != nil {
+		t.Fatalf("register broken: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	a, err := New(Options{
+		Version:   "test",
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+		Workspace: dir,
+		Registry:  reg,
+		LookupEnv: testLookup(nil),
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	if err := a.Execute([]string{"providers"}); err != nil {
+		t.Fatalf("providers: %v", err)
+	}
+	if strings.Contains(stdout.String(), "refused") || strings.Contains(stdout.String(), "unavailable") {
+		t.Fatalf("provider error landed in the table:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "NAME") || !strings.Contains(stdout.String(), "mock") {
+		t.Fatalf("table missing columns or mock row:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "velo: provider: broken: refused") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestModels(t *testing.T) {
 	dir := t.TempDir()
 	writeConfig(t, dir, testConfig())
@@ -193,7 +247,7 @@ func TestStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	for _, want := range []string{dir, "mock-model", "go:"} {
+	for _, want := range []string{dir, "mock-model", "go:", "max output tokens=4096", "version: test"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected %q in status output, got %q", want, stdout)
 		}
@@ -212,6 +266,28 @@ func TestDoctorOK(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected %q in doctor output, got %q", want, stdout)
 		}
+	}
+}
+
+func TestDoctorMockSkipsAPIKeyAndDoesNotCreateSessions(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig()
+	cfg.Provider.APIKeyEnv = "VELO_API_KEY"
+	writeConfig(t, dir, cfg)
+
+	stdout, _, err := run(t, dir, nil, "doctor")
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if strings.Contains(stdout, "VELO_API_KEY is not set") {
+		t.Fatalf("mock provider warned about an API key:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "api key not required for provider mock") {
+		t.Fatalf("expected mock key exemption, got %q", stdout)
+	}
+	sessions := filepath.Join(dir, ".velo", "sessions")
+	if _, statErr := os.Stat(sessions); !os.IsNotExist(statErr) {
+		t.Fatalf("doctor created %s: %v", sessions, statErr)
 	}
 }
 

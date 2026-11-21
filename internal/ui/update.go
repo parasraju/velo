@@ -157,24 +157,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if msg.String() == "enter" {
 		if m.running {
+			m.notice = "a run is in progress; the draft stays in the input"
 			return m, nil
 		}
 		return m.submit()
 	}
-	if msg.String() == "ctrl+j" && !m.running {
+	if msg.String() == "ctrl+j" {
 		m.input.InsertRune('\n')
 		m.relayout()
 		return m, nil
 	}
-	if msg.String() == "?" && m.input.Value() == "" {
+	if msg.String() == "?" && m.input.Value() == "" && !m.running {
 		m.showHelp = true
 		return m, nil
 	}
 
-	if m.running {
-		return m, nil
-	}
-
+	// Keystrokes during a run stay in the draft instead of being discarded.
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.relayout()
@@ -199,8 +197,10 @@ func (m Model) handleApprovalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ctrl.Decide(Decision{ID: id, Approve: false})
 		m.pending = nil
 		return m, nil
+	default:
+		m.notice = "press y to approve, n to deny, or t to trust"
+		return m, nil
 	}
-	return m, nil
 }
 
 func (m Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -298,6 +298,15 @@ func (m Model) command(line string) (tea.Model, tea.Cmd) {
 	case ":help", ":h":
 		m.showHelp = true
 		return m, nil
+	case ":status", ":config", ":models", ":tools":
+		name := strings.TrimPrefix(line, ":")
+		text, err := m.ctrl.Report(name)
+		if err != nil {
+			m.notice = name + ": " + err.Error()
+			return m, nil
+		}
+		m.appendSystem(strings.TrimRight(text, "\n"))
+		return m, nil
 	default:
 		m.notice = "unknown command: " + line
 		return m, nil
@@ -317,7 +326,7 @@ func (m Model) openPicker() (tea.Model, tea.Cmd) {
 func (m Model) startRun(objective string) (tea.Model, tea.Cmd) {
 	m.notice = ""
 	m.finalizeAssistant()
-	m.blocks = append(m.blocks, newUserBlock(objective))
+	m.pushBlock(newUserBlock(objective))
 	m.running = true
 	m.turn = 0
 	m.relayout()
@@ -357,7 +366,7 @@ func (m *Model) finishRun() {
 
 func (m *Model) appendSystem(text string) {
 	m.finalizeAssistant()
-	m.blocks = append(m.blocks, newSystemBlock(text))
+	m.pushBlock(newSystemBlock(text))
 	m.relayout()
 	m.scrollToBottom(false)
 }
@@ -392,7 +401,7 @@ func (m *Model) appendDelta(text string) {
 		m.blocks[n-1].text += text
 		return
 	}
-	m.blocks = append(m.blocks, block{kind: blockAssistant, text: text, streaming: true})
+	m.pushBlock(block{kind: blockAssistant, text: text, streaming: true})
 }
 
 func (m *Model) upsertTool(t *events.Tool, finished bool) {
@@ -404,10 +413,21 @@ func (m *Model) upsertTool(t *events.Tool, finished bool) {
 			return
 		}
 	}
-	m.blocks = append(m.blocks, newToolBlock(&cp))
+	m.pushBlock(newToolBlock(&cp))
 	m.relayout()
 	if finished {
 		m.scrollToBottom(false)
+	}
+}
+
+const maxTranscriptBlocks = 400
+
+// pushBlock appends a transcript block and drops the oldest entries once the
+// scrollback bound is reached.
+func (m *Model) pushBlock(b block) {
+	m.blocks = append(m.blocks, b)
+	if extra := len(m.blocks) - maxTranscriptBlocks; extra > 0 {
+		m.blocks = append([]block(nil), m.blocks[extra:]...)
 	}
 }
 

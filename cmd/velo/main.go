@@ -10,7 +10,14 @@ import (
 	"velo/internal/app"
 )
 
-var version = "dev"
+// version, commit, and date are stamped at build time:
+//
+//	go build -ldflags "-X main.version=v0.1.0 -X main.commit=abc1234 -X main.date=2026-11-21T00:00:00Z"
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -18,6 +25,8 @@ func main() {
 
 	a, err := app.New(app.Options{
 		Version: version,
+		Commit:  commit,
+		Date:    date,
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
 		Context: ctx,

@@ -83,8 +83,26 @@ func lightTheme() Theme {
 		ToolLabel:      lipgloss.NewStyle().Foreground(lipgloss.Color("130")).Bold(true),
 		SystemLabel:    lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true),
 		CodeBlock:      lipgloss.NewStyle().Foreground(lipgloss.Color("234")).Background(lipgloss.Color("254")).Padding(0, 1),
-		Rule:           lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
+		// 240 stays visible on a light background. 252 is nearly white.
+		Rule: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 	}
+}
+
+// asciiBorder is the box drawing used when color and unicode are unavailable.
+var asciiBorder = lipgloss.Border{
+	Top:          "-",
+	Bottom:       "-",
+	Left:         "|",
+	Right:        "|",
+	TopLeft:      "+",
+	TopRight:     "+",
+	BottomLeft:   "+",
+	BottomRight:  "+",
+	MiddleLeft:   "+",
+	MiddleRight:  "+",
+	Middle:       "-",
+	MiddleTop:    "+",
+	MiddleBottom: "+",
 }
 
 func nottyTheme() Theme {
@@ -102,7 +120,7 @@ func nottyTheme() Theme {
 		Prompt:         plain,
 		Border:         plain,
 		StatusBar:      plain.Padding(0, 1),
-		ModalBorder:    plain.Border(lipgloss.NormalBorder()),
+		ModalBorder:    plain.Border(asciiBorder),
 		UserLabel:      plain,
 		AssistantLabel: plain,
 		ToolLabel:      plain,

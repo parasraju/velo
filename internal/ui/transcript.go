@@ -24,6 +24,9 @@ func (m *Model) reloadTranscript() {
 	for _, msg := range msgs {
 		m.appendHistory(msg)
 	}
+	if extra := len(m.blocks) - maxTranscriptBlocks; extra > 0 {
+		m.blocks = append([]block(nil), m.blocks[extra:]...)
+	}
 	m.relayout()
 	m.vp.GotoBottom()
 }
@@ -32,13 +35,13 @@ func (m *Model) appendHistory(msg protocol.Message) {
 	switch msg.Role {
 	case protocol.RoleUser:
 		if text := strings.TrimSpace(msg.Text()); text != "" {
-			m.blocks = append(m.blocks, newUserBlock(text))
+			m.pushBlock(newUserBlock(text))
 		}
 	case protocol.RoleAssistant:
 		if text := strings.TrimSpace(msg.Text()); text != "" {
 			b := block{kind: blockAssistant, text: text}
 			b.rendered = renderMarkdown(m.theme.Name, text, m.contentWidth())
-			m.blocks = append(m.blocks, b)
+			m.pushBlock(b)
 		}
 		for _, call := range msg.ToolCalls() {
 			tool := &events.Tool{
@@ -50,7 +53,7 @@ func (m *Model) appendHistory(msg protocol.Message) {
 			if def, ok := m.toolCategory(call.Name); ok {
 				tool.Category = def
 			}
-			m.blocks = append(m.blocks, newToolBlock(tool))
+			m.pushBlock(newToolBlock(tool))
 		}
 	case protocol.RoleTool:
 		content := msg.Text()

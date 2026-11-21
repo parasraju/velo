@@ -25,7 +25,9 @@ func Run(ctx context.Context, opts Options) error {
 
 	m := newModel(opts)
 
-	p := tea.NewProgram(m, tea.WithContext(opts.BaseCtx), tea.WithMouseCellMotion())
+	// Alt screen keeps the caller's scrollback: the TUI draws on the alternate
+	// buffer and the previous terminal contents are restored on exit.
+	p := tea.NewProgram(m, tea.WithContext(opts.BaseCtx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program.p = p
 
 	err := watchContext(opts.BaseCtx, p, opts.Controller)

@@ -85,7 +85,11 @@ func newModel(opts Options) Model {
 	ta.SetWidth(60)
 	ta.Focus()
 
-	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+	frames := spinner.Dot
+	if opts.Theme == "notty" {
+		frames = spinner.Line
+	}
+	sp := spinner.New(spinner.WithSpinner(frames))
 	sp.Style = th.Accent
 
 	vp := viewport.New(80, 24)

@@ -26,6 +26,8 @@ const skipConfigAnnotation = "velo.skipConfig"
 
 type Options struct {
 	Version    string
+	Commit     string
+	Date       string
 	Stdin      io.Reader
 	Stdout     io.Writer
 	Stderr     io.Writer
@@ -46,6 +48,8 @@ type Options struct {
 type App struct {
 	opts       Options
 	version    string
+	commit     string
+	built      string
 	stdin      io.Reader
 	stdout     io.Writer
 	stderr     io.Writer
@@ -76,6 +80,12 @@ func New(opts Options) (*App, error) {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
+	if opts.Commit == "" {
+		opts.Commit = "unknown"
+	}
+	if opts.Date == "" {
+		opts.Date = "unknown"
+	}
 	if opts.LookupEnv == nil {
 		opts.LookupEnv = os.LookupEnv
 	}
@@ -88,6 +98,8 @@ func New(opts Options) (*App, error) {
 	a := &App{
 		opts:      opts,
 		version:   opts.Version,
+		commit:    opts.Commit,
+		built:     opts.Date,
 		stdin:     opts.Stdin,
 		stdout:    opts.Stdout,
 		stderr:    opts.Stderr,
@@ -140,6 +152,7 @@ func (a *App) newRootCommand() *cobra.Command {
 		Args:          cobra.ArbitraryArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       a.version,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return a.runREPL(cmd.Context())
@@ -150,12 +163,19 @@ func (a *App) newRootCommand() *cobra.Command {
 			if plain, err := cmd.Flags().GetBool("plain"); err == nil {
 				a.plain = plain
 			}
+			// `velo --version` must not require a workspace or config.
+			if cmd.Parent() == nil {
+				if f := cmd.Flags().Lookup("version"); f != nil && f.Changed {
+					return nil
+				}
+			}
 			if cmd.Annotations[skipConfigAnnotation] == "true" || cmd.Parent() != nil && cmd.Parent().Annotations[skipConfigAnnotation] == "true" {
 				return nil
 			}
 			return a.loadConfig(cmd)
 		},
 	}
+	root.SetVersionTemplate(a.versionText())
 
 	root.PersistentFlags().String("config", "", "path to the configuration file")
 	root.PersistentFlags().String("workspace", "", "workspace directory")

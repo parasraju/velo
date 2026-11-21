@@ -67,19 +67,35 @@ func (m *Model) scrollToBottom(force bool) {
 	}
 }
 
-func (m Model) renderTranscript() string {
+func (m *Model) renderTranscript() string {
 	if len(m.blocks) == 0 {
 		return m.welcome()
 	}
 	var sb strings.Builder
 	width := m.contentWidth()
-	for i, b := range m.blocks {
+	for i := range m.blocks {
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
-		sb.WriteString(m.renderBlock(b, width))
+		b := &m.blocks[i]
+		if b.view != "" && b.viewWidth == width && !blockLive(b) {
+			sb.WriteString(b.view)
+			continue
+		}
+		body := m.renderBlock(*b, width)
+		if !blockLive(b) {
+			b.view = body
+			b.viewWidth = width
+		}
+		sb.WriteString(body)
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// blockLive reports blocks whose appearance can change on the next event.
+// Finalized history is cached instead of restyled on every render.
+func blockLive(b *block) bool {
+	return b.streaming || b.kind == blockTool
 }
 
 func (m Model) renderBlock(b block, width int) string {
@@ -100,7 +116,7 @@ func (m Model) renderBlock(b block, width int) string {
 	case blockTool:
 		return m.renderBlockTool(b, width)
 	default:
-		return m.theme.SystemLabel.Render("  " + b.text)
+		return m.theme.SystemLabel.Render(indent(b.text, "  "))
 	}
 }
 
@@ -131,7 +147,11 @@ func (m Model) renderBlockTool(b block, width int) string {
 func (m Model) welcome() string {
 	th := m.theme
 	var sb strings.Builder
-	sb.WriteString(th.Accent.Render(banner))
+	art := banner
+	if th.Name == "notty" {
+		art = bannerASCII
+	}
+	sb.WriteString(th.Accent.Render(art))
 	sb.WriteString("\n\n")
 	sb.WriteString(th.Bold.Render("  a local coding agent") + "\n")
 	sb.WriteString(th.Dim.Render("  workspace  "+m.info.Workspace) + "\n")
@@ -146,50 +166,105 @@ const banner = `
  ╲╱   agent runtime
 `
 
+const bannerASCII = `
+\ /   V E L O
+ \/   agent runtime
+`
+
 func (m Model) renderStatus() string {
 	th := m.theme
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
+	ascii := th.Name == "notty"
 	var status string
 	switch {
 	case m.running:
-		status = th.Warning.Render(m.spin.View() + " working")
+		status = th.Warning.Render(strings.TrimSpace(m.spin.View() + " working"))
 	case m.pending != nil:
 		status = th.Warning.Render("awaiting approval")
 	default:
-		status = th.Success.Render("● idle")
-
+		if ascii {
+			status = th.Success.Render("idle")
+		} else {
+			status = th.Success.Render("● idle")
+		}
+	}
+	if width < 16 {
+		plain := "idle"
+		if m.running {
+			plain = "working"
+		}
+		if m.pending != nil {
+			plain = "approval"
+		}
+		return th.StatusBar.MaxWidth(width).Render(fitWidth(plain, width))
 	}
 	turn := th.Dim.Render(fmt.Sprintf("turn %d", m.turn))
-	tokens := th.Dim.Render("tokens —")
-	if m.usage != nil {
-		tokens = th.Dim.Render(fmt.Sprintf("tokens %d↑ %d↓", m.usage.InputTokens, m.usage.OutputTokens))
+	tokenLabel := "tokens -"
+	if !ascii {
+		tokenLabel = "tokens —"
 	}
-	session := th.Dim.Render("⌅ " + shortID(m.info.SessionID))
+	tokens := th.Dim.Render(tokenLabel)
+	if m.usage != nil {
+		up, down := "^", "v"
+		if !ascii {
+			up, down = "↑", "↓"
+		}
+		tokens = th.Dim.Render(fmt.Sprintf("tokens %d%s %d%s", m.usage.InputTokens, up, m.usage.OutputTokens, down))
+	}
+	sessionMark := "id "
+	if !ascii {
+		sessionMark = "⌅ "
+	}
+	session := th.Dim.Render(sessionMark + shortID(m.info.SessionID))
 	model := th.Accent.Render(m.info.Model)
 
-	segments := []string{status, model, turn, tokens, session}
-	inner := width - 2
-	used := 0
-	for _, s := range segments {
-		used += lipgloss.Width(s)
+	gap := " | "
+	if !ascii {
+		gap = " · "
 	}
-	gap := " · "
-	if len(segments) > 1 {
-		used += len(gap) * (len(segments) - 1)
+	segments := []string{status, model, turn, tokens, session}
+	for len(segments) > 1 && statusWidth(segments, gap) > width-2 {
+		segments = segments[:len(segments)-1]
 	}
 	left := segments[0]
 	right := ""
 	if len(segments) > 1 {
 		right = strings.Join(segments[1:], gap)
 	}
-	space := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	space := width - 2 - lipgloss.Width(left) - lipgloss.Width(right)
 	if space < 1 {
 		space = 1
 	}
-	return th.StatusBar.Width(width).Render(left + strings.Repeat(" ", space) + right)
+	line := left + strings.Repeat(" ", space) + right
+	return th.StatusBar.MaxWidth(width).Render(line)
+}
+
+func statusWidth(segments []string, gap string) int {
+	used := 0
+	for _, s := range segments {
+		used += lipgloss.Width(s)
+	}
+	if len(segments) > 1 {
+		used += lipgloss.Width(gap) * (len(segments) - 1)
+	}
+	return used
+}
+
+func fitWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes)
 }
 
 func (m Model) renderNotice() string {
@@ -217,10 +292,18 @@ func (m Model) View() string {
 		transcript = m.renderHelp()
 	}
 
+	rule := "─"
+	if m.theme.Name == "notty" {
+		rule = "-"
+	}
+	ruleWidth := m.width
+	if ruleWidth < 1 {
+		ruleWidth = 1
+	}
 	parts := []string{
 		m.renderStatus(),
 		transcript,
-		m.theme.Border.Render(strings.Repeat("─", m.width)),
+		m.theme.Border.Render(strings.Repeat(rule, ruleWidth)),
 		m.input.View(),
 		m.renderNotice(),
 	}
@@ -231,7 +314,11 @@ func (m Model) renderApprovalModal() string {
 	th := m.theme
 	t := m.pending
 	var sb strings.Builder
-	sb.WriteString(th.Warning.Render("⚠ approval required") + "  " + th.ToolLabel.Render(t.Name))
+	warn := "⚠ approval required"
+	if th.Name == "notty" {
+		warn = "! approval required"
+	}
+	sb.WriteString(th.Warning.Render(warn) + "  " + th.ToolLabel.Render(t.Name))
 	if t.Destructive {
 		sb.WriteString("  " + th.Error.Render("[DESTRUCTIVE]"))
 	}
@@ -293,10 +380,14 @@ func (m Model) renderHelp() string {
 	}
 	sb.WriteString("\n" + th.Bold.Render("  commands") + "\n\n")
 	for _, k := range [][2]string{
-		{":sessions", "browse and resume saved sessions"},
+		{":sessions, :s", "browse and resume saved sessions"},
 		{":new", "start a fresh session"},
+		{":status", "show runtime status"},
+		{":config", "show the effective configuration"},
+		{":models", "show the configured model"},
+		{":tools", "list tools"},
 		{":help", "this screen"},
-		{":quit", "exit velo"},
+		{":quit, :exit, :q", "exit velo"},
 	} {
 		sb.WriteString(fmt.Sprintf("  %s  %s\n", th.Accent.Render(padded(k[0], 18)), th.Base.Render(k[1])))
 	}

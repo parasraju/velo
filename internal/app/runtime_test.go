@@ -217,6 +217,48 @@ func TestSessionsListAndInspect(t *testing.T) {
 	}
 }
 
+func TestSessionsDeleteAndArchive(t *testing.T) {
+	dir := sampleWorkspace(t)
+	toolConfig(t, dir)
+	store := sessionStoreFor(t, dir)
+	if _, err := store.Create("drop-me", dir); err != nil {
+		t.Fatalf("create drop-me: %v", err)
+	}
+	if _, err := store.Create("keep-me", dir); err != nil {
+		t.Fatalf("create keep-me: %v", err)
+	}
+
+	mp := mock.New("mock", "mock-model", mock.Step{Text: "unused", FinishReason: protocol.FinishStop})
+	a, stdout, _ := scriptedApp(t, dir, mp, "")
+	if err := a.Execute([]string{"sessions", "delete", "drop-me"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "deleted session drop-me") {
+		t.Fatalf("delete output: %q", stdout.String())
+	}
+	if _, err := store.Open("drop-me"); err == nil {
+		t.Fatal("deleted session still opens")
+	}
+
+	stdout.Reset()
+	if err := a.Execute([]string{"sessions", "archive", "keep-me"}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	list, err := store.List()
+	if err != nil || len(list) != 0 {
+		t.Fatalf("list after archive: %v %+v", err, list)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".velo", "sessions", "keep-me.jsonl.archived")); err != nil {
+		t.Fatalf("archived file: %v", err)
+	}
+	if err := a.Execute([]string{"resume", "drop-me", "Continue"}); err == nil {
+		t.Fatal("resume of a deleted session succeeded")
+	}
+	if err := a.Execute([]string{"resume", "keep-me", "Continue"}); err == nil {
+		t.Fatal("resume of an archived session succeeded")
+	}
+}
+
 func TestResumePreservesSession(t *testing.T) {
 	dir := sampleWorkspace(t)
 	toolConfig(t, dir)

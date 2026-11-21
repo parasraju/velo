@@ -283,6 +283,26 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+// Archive renames a session journal so it drops out of List and resume
+// without deleting the record. The archived file is id.jsonl.archived.
+func (s *Store) Archive(id string) error {
+	path, err := s.Path(id)
+	if err != nil {
+		return err
+	}
+	dest := path + ".archived"
+	if _, err := os.Stat(dest); err == nil {
+		return fmt.Errorf("session: archive %q: destination already exists", id)
+	}
+	if err := os.Rename(path, dest); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("session: archive %q: %w", id, err)
+	}
+	return nil
+}
+
 type parsedSession struct {
 	id        string
 	workspace string
