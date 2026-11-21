@@ -364,10 +364,11 @@ func mapFinishReason(reason string, hasToolCalls bool) protocol.FinishReason {
 		return protocol.FinishLength
 	case "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "BLOCKLIST":
 		return protocol.FinishContentFilter
-	case "STOP":
+	case "STOP", "":
 		return protocol.FinishStop
 	default:
-		return protocol.FinishStop
+		// Unknown reasons must not look like a normal stop.
+		return protocol.FinishUnknown
 	}
 }
 

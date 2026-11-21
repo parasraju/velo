@@ -111,6 +111,9 @@ func (m Model) handleEvent(e events.Event) Model {
 		m.appendSystem("error: " + e.Message)
 	case events.RunFinished:
 		m.finishRun()
+		if e.Run != nil && e.Run.Truncated {
+			m.appendSystem("output truncated at the length limit")
+		}
 		if e.Run != nil && e.Run.Status != "completed" && e.Run.Status != "cancelled" {
 			m.appendSystem("status: " + e.Run.Status)
 		}

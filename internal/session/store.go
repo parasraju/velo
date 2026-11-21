@@ -13,8 +13,23 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// registry is the process-wide set of open sessions, keyed by the absolute
+// path of the journal file. Create and Open return the same *Session so
+// concurrent handles share one mutex and one lastSeq. A sibling lock file
+// (see lock.go) keeps a second process from opening the same journal.
+var (
+	registryMu sync.Mutex
+	registry   = map[string]*sessionEntry{}
+)
+
+type sessionEntry struct {
+	sess *Session
+	refs int
+}
 
 type Store struct {
 	root string
@@ -66,6 +81,13 @@ func (s *Store) Create(id, workspace string) (*Session, error) {
 		return nil, fmt.Errorf("session: create %q: %w", id, err)
 	}
 	path := filepath.Join(s.root, id+".jsonl")
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, ok := registry[path]; ok {
+		return nil, fmt.Errorf("session: create %q: %w", id, os.ErrExist)
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -88,26 +110,51 @@ func (s *Store) Create(id, workspace string) (*Session, error) {
 		os.Remove(path)
 		return nil, fmt.Errorf("session: create %q: %w", id, err)
 	}
+	if err := acquireSessionLock(path); err != nil {
+		os.Remove(path)
+		return nil, fmt.Errorf("session: create %q: %w", id, err)
+	}
 	state := State{Status: "created", Turns: 0, UpdatedAt: now}
-	return &Session{
+	sess := &Session{
 		store:     s,
 		id:        id,
 		workspace: workspace,
 		createdAt: now,
 		updatedAt: now,
 		state:     state,
-	}, nil
+	}
+	registry[path] = &sessionEntry{sess: sess, refs: 1}
+	return sess, nil
 }
 
+// Open returns the live in-process session for id when one is already open,
+// otherwise it parses the journal and registers that session. lastSeq comes
+// from the on-disk tail of that parse. A lock held by another live process
+// returns ErrSessionLocked.
 func (s *Store) Open(id string) (*Session, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(s.root, id+".jsonl")
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if entry, ok := registry[path]; ok {
+		entry.refs++
+		return entry.sess, nil
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("session: open %q: %w", id, err)
+	}
+	if err := acquireSessionLock(path); err != nil {
+		f.Close()
+		if errors.Is(err, ErrSessionLocked) {
+			return nil, fmt.Errorf("session: open %q: %w", id, ErrSessionLocked)
 		}
 		return nil, fmt.Errorf("session: open %q: %w", id, err)
 	}
@@ -116,6 +163,7 @@ func (s *Store) Open(id string) (*Session, error) {
 		perr = cerr
 	}
 	if perr != nil {
+		releaseSessionLock(path)
 		if errors.Is(perr, ErrInvalidSession) {
 			return nil, ErrInvalidSession
 		}
@@ -139,6 +187,7 @@ func (s *Store) Open(id string) (*Session, error) {
 	} else {
 		sess.state = State{Status: "created", Turns: 0, UpdatedAt: p.updatedAt}
 	}
+	registry[path] = &sessionEntry{sess: sess, refs: 1}
 	return sess, nil
 }
 
@@ -209,6 +258,21 @@ func (s *Store) Delete(id string) error {
 	path, err := s.Path(id)
 	if err != nil {
 		return err
+	}
+	registryMu.Lock()
+	if entry, ok := registry[path]; ok {
+		entry.sess.mu.Lock()
+		entry.sess.closed = true
+		entry.sess.mu.Unlock()
+		delete(registry, path)
+		releaseSessionLock(path)
+		registryMu.Unlock()
+	} else {
+		registryMu.Unlock()
+		if err := lockHeldByOther(path); err != nil {
+			return fmt.Errorf("session: delete %q: %w", id, err)
+		}
+		releaseSessionLock(path)
 	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

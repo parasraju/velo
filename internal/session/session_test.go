@@ -133,6 +133,11 @@ func TestAppendReopenPreservesOrder(t *testing.T) {
 	if err := sess.SaveState(State{Status: "running", Turns: 1, Objective: "ship"}); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
+	// Close so Open re-reads the journal. A still-open session is the same
+	// writer and would not exercise the on-disk decode.
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	reopened, err := s.Open("reopen")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -917,5 +922,160 @@ func TestConcurrentAppendStateCompact(t *testing.T) {
 	last := lines[len(lines)-1]
 	if last.Seq != maxSeq+1 {
 		t.Fatalf("next seq = %d, want %d", last.Seq, maxSeq+1)
+	}
+}
+
+func TestIndependentOpensShareSequence(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	created, err := s1.Create("indep", "ws")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	opened, err := s2.Open("indep")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if created != opened {
+		t.Fatal("independent Open returned a second session")
+	}
+
+	const goroutines = 20
+	const perGoroutine = 10
+	errs := make(chan error, goroutines*perGoroutine)
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		handle := created
+		if g%2 == 1 {
+			handle = opened
+		}
+		go func(g int, handle *Session) {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				text := fmt.Sprintf("%d-%d", g, i)
+				m := protocol.Message{Role: protocol.RoleUser, Content: []protocol.Content{protocol.TextContent(text)}}
+				if err := handle.AppendMessage(m); err != nil {
+					errs <- err
+				}
+			}
+		}(g, handle)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("append: %v", err)
+	}
+
+	path, err := s1.Path("indep")
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	lines := readLines(t, path)
+	var seqs []int64
+	for _, l := range lines {
+		if l.Type == "message" {
+			seqs = append(seqs, l.Seq)
+		}
+	}
+	if len(seqs) != goroutines*perGoroutine {
+		t.Fatalf("message lines = %d, want %d", len(seqs), goroutines*perGoroutine)
+	}
+	seen := map[int64]bool{}
+	for i, seq := range seqs {
+		if seq != int64(i+1) {
+			t.Fatalf("seq[%d] = %d, want %d", i, seq, i+1)
+		}
+		if seen[seq] {
+			t.Fatalf("duplicate seq %d", seq)
+		}
+		seen[seq] = true
+	}
+
+	if err := created.Close(); err != nil {
+		t.Fatalf("Close create handle: %v", err)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatalf("Close open handle: %v", err)
+	}
+	if err := created.AppendMessage(protocol.Message{Role: protocol.RoleUser, Content: []protocol.Content{protocol.TextContent("after close")}}); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("append after close = %v, want ErrSessionClosed", err)
+	}
+	if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock file still present: %v", err)
+	}
+
+	reopened, err := s2.Open("indep")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	if got := len(reopened.Messages()); got != goroutines*perGoroutine {
+		t.Fatalf("reopened messages = %d, want %d", got, goroutines*perGoroutine)
+	}
+	if err := reopened.AppendMessage(protocol.Message{Role: protocol.RoleUser, Content: []protocol.Content{protocol.TextContent("tail")}}); err != nil {
+		t.Fatalf("append after reopen: %v", err)
+	}
+	lines = readLines(t, path)
+	last := lines[len(lines)-1]
+	if last.Seq != int64(goroutines*perGoroutine)+1 {
+		t.Fatalf("tail seq = %d, want %d", last.Seq, goroutines*perGoroutine+1)
+	}
+}
+
+func TestSessionLockRejectsLiveOwner(t *testing.T) {
+	parent := os.Getppid()
+	if parent <= 0 || parent == os.Getpid() || !pidAlive(parent) {
+		t.Skip("parent process is not a live foreign owner")
+	}
+	dir := t.TempDir()
+	st, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	id := "held"
+	writeRaw(t, dir, id+".jsonl", headerLine(id, "ws", "2024-01-01T00:00:00Z"))
+	writeRaw(t, dir, id+".jsonl.lock", fmt.Sprintf("%d\n", parent))
+	_, err = st.Open(id)
+	if !errors.Is(err, ErrSessionLocked) {
+		t.Fatalf("Open = %v, want ErrSessionLocked", err)
+	}
+	if err := st.Delete(id); !errors.Is(err, ErrSessionLocked) {
+		t.Fatalf("Delete = %v, want ErrSessionLocked", err)
+	}
+}
+
+func TestSessionLockStealsDeadOwner(t *testing.T) {
+	dir := t.TempDir()
+	st, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	id := "stale"
+	writeRaw(t, dir, id+".jsonl", headerLine(id, "ws", "2024-01-01T00:00:00Z")+
+		messageLine(1, "2024-01-01T00:00:01Z", "user", "kept"))
+	writeRaw(t, dir, id+".jsonl.lock", "2147483647\n")
+	sess, err := st.Open(id)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer sess.Close()
+	if msgs := sess.Messages(); len(msgs) != 1 || msgs[0].Text() != "kept" {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	if err := sess.AppendMessage(protocol.Message{Role: protocol.RoleUser, Content: []protocol.Content{protocol.TextContent("next")}}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	path, _ := st.Path(id)
+	lines := readLines(t, path)
+	if lines[len(lines)-1].Seq != 2 {
+		t.Fatalf("seq = %d, want 2", lines[len(lines)-1].Seq)
 	}
 }

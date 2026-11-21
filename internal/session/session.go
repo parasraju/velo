@@ -18,6 +18,11 @@ var (
 	ErrSessionNotFound = errors.New("session: not found")
 	ErrInvalidSession  = errors.New("session: invalid")
 	ErrInvalidID       = errors.New("session: invalid id")
+	// ErrSessionLocked is returned when another live process holds the
+	// session lock. A second open in this process returns the existing
+	// *Session instead.
+	ErrSessionLocked = errors.New("session: locked")
+	ErrSessionClosed = errors.New("session: closed")
 )
 
 type Event struct {
@@ -77,7 +82,12 @@ type Session struct {
 	stateSet  bool
 	stateSeq  int64
 	stateTime time.Time
-	lastSeq   int64
+	// lastSeq is the highest sequence written for this file. The process-wide
+	// registry guarantees one *Session per path, and every append holds mu, so
+	// this value is the on-disk tail. Open initializes it from a full parse
+	// while holding that registry lock.
+	lastSeq int64
+	closed  bool
 }
 
 func (s *Session) ID() string {
@@ -130,6 +140,9 @@ func (s *Session) AppendMessage(m protocol.Message) error {
 	cp := cloneMessage(m)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	path, err := s.store.Path(s.id)
 	if err != nil {
 		return err
@@ -154,6 +167,9 @@ func (s *Session) AppendEvent(kind string, data map[string]any) error {
 	d := cloneData(data)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	path, err := s.store.Path(s.id)
 	if err != nil {
 		return err
@@ -198,6 +214,9 @@ func (s *Session) SaveState(st State) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	path, err := s.store.Path(s.id)
 	if err != nil {
 		return err
@@ -221,6 +240,9 @@ func (s *Session) SaveState(st State) error {
 func (s *Session) Compact() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpen(); err != nil {
+		return err
+	}
 	path, err := s.store.Path(s.id)
 	if err != nil {
 		return err
@@ -281,6 +303,42 @@ func (s *Session) Compact() error {
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("session: compact: %w", err)
+	}
+	return nil
+}
+
+// Close drops one reference to the session. The last Close marks the session
+// closed, unregisters it, and removes the cross-process lock. Close is
+// idempotent. Reads remain available after Close; further writes fail.
+func (s *Session) Close() error {
+	if s == nil {
+		return nil
+	}
+	path, err := s.store.Path(s.id)
+	if err != nil {
+		return err
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	entry, ok := registry[path]
+	if !ok || entry.sess != s {
+		return nil
+	}
+	if entry.refs > 1 {
+		entry.refs--
+		return nil
+	}
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	delete(registry, path)
+	releaseSessionLock(path)
+	return nil
+}
+
+func (s *Session) ensureOpen() error {
+	if s.closed {
+		return ErrSessionClosed
 	}
 	return nil
 }

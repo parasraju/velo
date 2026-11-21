@@ -440,3 +440,39 @@ func TestStreamCancellation(t *testing.T) {
 		t.Fatal("recv did not stop after cancellation")
 	}
 }
+
+func TestStreamPrematureEOFIsIncomplete(t *testing.T) {
+	p := testProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+	})
+	st, err := p.Stream(context.Background(), request())
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer st.Close()
+
+	var sawText, sawDone bool
+	var recvErr error
+	for {
+		event, err := st.Recv()
+		if err != nil {
+			recvErr = err
+			break
+		}
+		switch event.Type {
+		case protocol.StreamTextDelta:
+			sawText = true
+		case protocol.StreamDone:
+			sawDone = true
+		}
+	}
+	if !sawText {
+		t.Fatal("content delta was not delivered")
+	}
+	if sawDone {
+		t.Fatal("premature EOF synthesized a done event")
+	}
+	if !errors.Is(recvErr, protocol.ErrStreamIncomplete) {
+		t.Fatalf("recv error = %v, want ErrStreamIncomplete", recvErr)
+	}
+}

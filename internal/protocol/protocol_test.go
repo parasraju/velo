@@ -219,12 +219,16 @@ func TestStreamBuilder(t *testing.T) {
 	}
 
 	empty := NewStreamBuilder()
-	resp, err = empty.Response()
-	if err != nil {
-		t.Fatalf("empty response: %v", err)
+	if _, err = empty.Response(); !errors.Is(err, ErrStreamIncomplete) {
+		t.Fatalf("empty response: %v, want ErrStreamIncomplete", err)
 	}
-	if resp.FinishReason != FinishStop {
-		t.Fatalf("empty finish: got %q want %q", resp.FinishReason, FinishStop)
+
+	partial := NewStreamBuilder()
+	if err := partial.Apply(StreamEvent{Type: StreamTextDelta, Text: "partial"}); err != nil {
+		t.Fatalf("apply partial: %v", err)
+	}
+	if _, err = partial.Response(); !errors.Is(err, ErrStreamIncomplete) {
+		t.Fatalf("partial response: %v, want ErrStreamIncomplete", err)
 	}
 
 	inferred := NewStreamBuilder()
@@ -232,6 +236,9 @@ func TestStreamBuilder(t *testing.T) {
 		Index: 0, ID: "call_1", Name: "lookup", ArgumentsDelta: `{}`,
 	}}); err != nil {
 		t.Fatalf("apply: %v", err)
+	}
+	if err := inferred.Apply(StreamEvent{Type: StreamDone}); err != nil {
+		t.Fatalf("apply done: %v", err)
 	}
 	resp, err = inferred.Response()
 	if err != nil {
