@@ -294,6 +294,21 @@ func (s *Store) Archive(id string) error {
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("session: archive %q: destination already exists", id)
 	}
+	registryMu.Lock()
+	if entry, ok := registry[path]; ok {
+		entry.sess.mu.Lock()
+		entry.sess.closed = true
+		entry.sess.mu.Unlock()
+		delete(registry, path)
+		releaseSessionLock(path)
+		registryMu.Unlock()
+	} else {
+		registryMu.Unlock()
+		if err := lockHeldByOther(path); err != nil {
+			return fmt.Errorf("session: archive %q: %w", id, err)
+		}
+		releaseSessionLock(path)
+	}
 	if err := os.Rename(path, dest); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrSessionNotFound

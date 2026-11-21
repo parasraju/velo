@@ -157,6 +157,54 @@ func TestOneShotRunsToolThenAnswers(t *testing.T) {
 	}
 }
 
+func TestREPLStartsWithoutProviderAndConnects(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	a, err := New(Options{
+		Version:   "test",
+		Stdin:     strings.NewReader("/providers\nhello\n/provider gemini\nsuper-secret-key\n/quit\n"),
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+		Workspace: dir,
+		LookupEnv: testLookup(nil),
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	if err := a.Execute(nil); err != nil {
+		t.Fatalf("repl: %v\n%s\n%s", err, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	errOut := stderr.String()
+	if strings.Contains(out, "super-secret-key") || strings.Contains(errOut, "super-secret-key") {
+		t.Fatal("api key was written to the terminal")
+	}
+	if !strings.Contains(out, "No provider connected") || !strings.Contains(out, "gemini") {
+		t.Fatalf("startup listing missing:\n%s", out)
+	}
+	if !strings.Contains(errOut, "no provider connected") {
+		t.Fatalf("task should explain the missing provider, stderr %q", errOut)
+	}
+	if !strings.Contains(out, "connected gemini") {
+		t.Fatalf("connect result missing:\n%s\nstderr %s", out, errOut)
+	}
+	key, ok := a.secret("GEMINI_API_KEY")
+	if !ok || key != "super-secret-key" {
+		t.Fatal("api key was not kept for the process")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".velo", "config.yaml"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "super-secret-key") {
+		t.Fatalf("api key was saved to config:\n%s", text)
+	}
+	if !strings.Contains(text, "name: gemini") || !strings.Contains(text, "GEMINI_API_KEY") {
+		t.Fatalf("provider selection was not saved:\n%s", text)
+	}
+}
+
 func TestREPLRunsTaskAndExits(t *testing.T) {
 	dir := sampleWorkspace(t)
 	toolConfig(t, dir)

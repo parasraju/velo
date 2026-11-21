@@ -94,6 +94,44 @@ func (f *fakeController) Report(name string) (string, error) {
 	return name + " report", nil
 }
 
+func (f *fakeController) ListProviders() ([]ProviderRow, error) {
+	return []ProviderRow{
+		{Name: "mock", Current: true, Ready: true},
+		{Name: "gemini", NeedsKey: true},
+	}, nil
+}
+
+func (f *fakeController) UseProvider(name string) (Info, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.info.Provider = name
+	f.info.Model = name
+	f.info.Ready = name != "gemini"
+	if name == "gemini" {
+		return f.info, "selected gemini", nil
+	}
+	return f.info, "connected " + name, nil
+}
+
+func (f *fakeController) ConnectKey(string) (Info, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.info.Ready = true
+	return f.info, "connected", nil
+}
+
+func (f *fakeController) ListModels() ([]ModelRow, error) {
+	return []ModelRow{{Name: "mock-model", Current: true}, {Name: "other-model"}}, nil
+}
+
+func (f *fakeController) UseModel(name string) (Info, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.info.Model = name
+	f.info.Ready = name != ""
+	return f.info, "model " + name, nil
+}
+
 func (f *fakeController) NewSession() (Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -309,7 +347,7 @@ func TestModelEscCancelsRun(t *testing.T) {
 func TestModelCommands(t *testing.T) {
 	t.Run("quit", func(t *testing.T) {
 		fake, m := newTestModel(t)
-		m.input.SetValue(":quit")
+		m.input.SetValue("/quit")
 		m, cmd := enter(t, m)
 		if cmd == nil {
 			t.Fatal("expected quit command")
@@ -328,16 +366,16 @@ func TestModelCommands(t *testing.T) {
 
 	t.Run("help", func(t *testing.T) {
 		_, m := newTestModel(t)
-		m.input.SetValue(":help")
+		m.input.SetValue("/help")
 		m, _ = enter(t, m)
 		if !m.showHelp {
 			t.Fatal("help should open")
 		}
 		view := stripANSI(m.View())
-		if !strings.Contains(view, "commands") || !strings.Contains(view, ":sessions") {
+		if !strings.Contains(view, "commands") || !strings.Contains(view, "/sessions") {
 			t.Errorf("help view incomplete:\n%s", view)
 		}
-		for _, alias := range []string{":exit", ":q", ":s", ":status", ":config", ":models", ":tools"} {
+		for _, alias := range []string{"/status", "/models", "/tools", "/providers", "/connect", "/quit"} {
 			if !strings.Contains(view, alias) {
 				t.Errorf("help missing %s:\n%s", alias, view)
 			}
@@ -350,7 +388,7 @@ func TestModelCommands(t *testing.T) {
 
 	t.Run("reports", func(t *testing.T) {
 		_, m := newTestModel(t)
-		m.input.SetValue(":status")
+		m.input.SetValue("/status")
 		m, _ = enter(t, m)
 		view := stripANSI(m.View())
 		if !strings.Contains(view, "status report") {
@@ -360,7 +398,7 @@ func TestModelCommands(t *testing.T) {
 
 	t.Run("unknown", func(t *testing.T) {
 		_, m := newTestModel(t)
-		m.input.SetValue(":frobnicate")
+		m.input.SetValue("/frobnicate")
 		m, _ = enter(t, m)
 		if !strings.Contains(m.notice, "unknown command") {
 			t.Errorf("notice = %q", m.notice)
@@ -385,7 +423,7 @@ func TestModelSessionPickerAndResume(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	m.input.SetValue(":sessions")
+	m.input.SetValue("/sessions")
 	m, cmd := enter(t, m)
 	if !m.showPicker {
 		t.Fatal("picker should open")
@@ -437,7 +475,7 @@ func TestModelNewSessionClears(t *testing.T) {
 		events.Event{Kind: events.RunStarted},
 		events.Event{Kind: events.TextDelta, Delta: "old answer"},
 	))
-	m.input.SetValue(":new")
+	m.input.SetValue("/new")
 	m, _ = enter(t, m)
 	if m.info.SessionID != "sess-new" {
 		t.Errorf("session = %q", m.info.SessionID)
@@ -532,6 +570,64 @@ func TestLightRuleIsNotNearWhite(t *testing.T) {
 	out := NewTheme("light").Rule.Render("-")
 	if strings.Contains(out, "38;5;252") {
 		t.Fatalf("light rule color is 252: %q", out)
+	}
+}
+
+func TestSlashOpensEveryCommand(t *testing.T) {
+	_, m := newTestModel(t)
+	m, _ = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.showCommands {
+		t.Fatal("slash did not open the command list")
+	}
+	view := stripANSI(m.View())
+	for _, item := range commandPalette {
+		if !strings.Contains(view, "/"+item.label) {
+			t.Fatalf("command list missing /%s:\n%s", item.label, view)
+		}
+	}
+}
+
+func TestProviderPickerAndConnect(t *testing.T) {
+	_, m := newTestModel(t)
+	m.input.SetValue("/providers")
+	m, cmd := enter(t, m)
+	if !m.showProviders || cmd == nil {
+		t.Fatal("providers picker did not open")
+	}
+	m, _ = updated(t, m, cmd())
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "mock") || !strings.Contains(view, "gemini") {
+		t.Fatalf("picker missing providers:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "gemini") && strings.Contains(line, "gemini-") {
+			t.Fatalf("provider row included a model:\n%s", line)
+		}
+	}
+	// mock is the first row and needs no key.
+	m, _ = enter(t, m)
+	if m.showProviders {
+		t.Fatal("picker stayed open after select")
+	}
+	if !strings.Contains(m.notice, "connected mock") {
+		t.Fatalf("notice = %q", m.notice)
+	}
+
+	m.input.SetValue("/providers")
+	m, cmd = enter(t, m)
+	m, _ = updated(t, m, cmd())
+	m.providerIdx = 1
+	m, _ = enter(t, m)
+	if !m.awaitKey {
+		t.Fatal("selecting gemini did not ask for an API key")
+	}
+	m.input.SetValue("secret-value")
+	m, _ = enter(t, m)
+	if strings.Contains(stripANSI(m.View()), "secret-value") {
+		t.Fatal("api key was copied into the transcript")
+	}
+	if !strings.Contains(m.notice, "connected") {
+		t.Fatalf("notice = %q", m.notice)
 	}
 }
 

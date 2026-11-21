@@ -27,6 +27,16 @@ type sessionsMsg struct {
 	err  error
 }
 
+type providersMsg struct {
+	rows []ProviderRow
+	err  error
+}
+
+type modelsMsg struct {
+	rows []ModelRow
+	err  error
+}
+
 // Model is the Bubble Tea model for the VELO chat interface.
 type Model struct {
 	ctrl  Controller
@@ -46,12 +56,21 @@ type Model struct {
 	turn    int
 	usage   *protocol.Usage
 
-	pending    *events.Tool // approval awaiting a decision
-	picker     []SessionRow
-	pickerIdx  int
-	showPicker bool
-	showHelp   bool
-	notice     string // transient status/error line under the input
+	pending       *events.Tool // approval awaiting a decision
+	picker        []SessionRow
+	pickerIdx     int
+	showPicker    bool
+	providers     []ProviderRow
+	providerIdx   int
+	showProviders bool
+	showCommands  bool
+	commandIdx    int
+	models        []ModelRow
+	modelIdx      int
+	showModels    bool
+	awaitKey      bool
+	showHelp      bool
+	notice        string // transient status/error line under the input
 
 	runCancel context.CancelFunc
 	baseCtx   context.Context
@@ -76,7 +95,7 @@ func newModel(opts Options) Model {
 
 	ta := textarea.New()
 	ta.Prompt = "› "
-	ta.Placeholder = "Describe a task, or : for commands  (:help)"
+	ta.Placeholder = "Describe a task, or / to choose a command"
 	st := textarea.Style{Prompt: th.Prompt, Placeholder: th.Dim, Text: th.Base}
 	ta.FocusedStyle = st
 	ta.BlurredStyle = st

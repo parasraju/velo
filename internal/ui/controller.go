@@ -18,8 +18,27 @@ type Info struct {
 	Version   string
 	Workspace string
 	Model     string
+	Provider  string
+	Ready     bool
 	SessionID string
 	Status    string
+}
+
+// ProviderRow is one entry in the provider picker. Model is empty there;
+// model choices are a separate list.
+type ProviderRow struct {
+	Name     string
+	Model    string
+	Current  bool
+	Ready    bool
+	NeedsKey bool
+	Detail   string
+}
+
+// ModelRow is one entry in the model picker for the selected provider.
+type ModelRow struct {
+	Name    string
+	Current bool
 }
 
 // SessionRow is one entry in the session picker.
@@ -70,6 +89,16 @@ type Controller interface {
 	NewSession() (Info, error)
 	// Report returns a plain-text view named status, config, models, or tools.
 	Report(name string) (string, error)
+	// ListProviders returns the registered providers and which one is active.
+	ListProviders() ([]ProviderRow, error)
+	// UseProvider selects name and connects it when no secret is required.
+	UseProvider(name string) (Info, string, error)
+	// ConnectKey stores an API key for the current provider in this process.
+	ConnectKey(key string) (Info, string, error)
+	// ListModels returns models for the selected provider.
+	ListModels() ([]ModelRow, error)
+	// UseModel switches the selected provider to model and reconnects.
+	UseModel(model string) (Info, string, error)
 	// Cancel aborts the in-flight run, if any.
 	Cancel()
 	// Shutdown releases controller resources and closes the Events channel so

@@ -23,9 +23,6 @@ import (
 // session. It replaces the plain REPL only when both stdin and stdout are
 // terminals and ui.enabled is set.
 func (a *App) runTUI(ctx context.Context) error {
-	if err := a.checkProviderConfigured(); err != nil {
-		return err
-	}
 	c, err := newTUIController(a)
 	if err != nil {
 		return err
@@ -94,7 +91,7 @@ func newTUIController(a *App) (*tuiController, error) {
 	a.sink = relay
 	a.opts.Approver = c.approve
 
-	rt, err := a.newRuntime()
+	rt, err := a.newInteractiveRuntime()
 	if err != nil {
 		a.sink = nil
 		a.opts.Approver = nil
@@ -121,12 +118,58 @@ func (c *tuiController) Info() ui.Info {
 	if sess != nil {
 		id = sess.ID()
 	}
+	model := c.app.cfg.Provider.Model
+	if model == "" || model == "example-model" {
+		model = "no provider"
+	}
 	return ui.Info{
 		Version:   c.app.version,
 		Workspace: c.app.workspace,
-		Model:     c.app.cfg.Provider.Model,
+		Model:     model,
+		Provider:  c.app.cfg.Provider.Name,
+		Ready:     c.rt.provider() != nil,
 		SessionID: id,
 	}
+}
+
+func (c *tuiController) ListProviders() ([]ui.ProviderRow, error) {
+	rows := c.rt.providerRows()
+	out := make([]ui.ProviderRow, len(rows))
+	for i, row := range rows {
+		out[i] = ui.ProviderRow{
+			Name:     row.Name,
+			Model:    row.Model,
+			Current:  row.Current,
+			Ready:    row.Ready,
+			NeedsKey: row.NeedsKey,
+			Detail:   row.Detail,
+		}
+	}
+	return out, nil
+}
+
+func (c *tuiController) UseProvider(name string) (ui.Info, string, error) {
+	msg, err := c.rt.useProvider(name, "")
+	return c.Info(), msg, err
+}
+
+func (c *tuiController) ConnectKey(key string) (ui.Info, string, error) {
+	msg, err := c.rt.connectKey(key)
+	return c.Info(), msg, err
+}
+
+func (c *tuiController) ListModels() ([]ui.ModelRow, error) {
+	rows := c.rt.modelRows()
+	out := make([]ui.ModelRow, len(rows))
+	for i, row := range rows {
+		out[i] = ui.ModelRow{Name: row.Name, Current: row.Current}
+	}
+	return out, nil
+}
+
+func (c *tuiController) UseModel(model string) (ui.Info, string, error) {
+	msg, err := c.rt.useModel(model)
+	return c.Info(), msg, err
 }
 
 func (c *tuiController) Events() <-chan events.Event { return c.sub }
@@ -173,8 +216,12 @@ func (c *tuiController) Run(ctx context.Context, objective string) error {
 func (c *tuiController) runAgent(ctx context.Context, sess *session.Session, objective string) (agent.Result, error) {
 	a := c.app
 	rt := c.rt
+	prov := rt.provider()
+	if prov == nil {
+		return agent.Result{}, errors.New("no provider connected; press / and select providers")
+	}
 	runner, err := agent.New(agent.Options{
-		Provider:            rt.prov,
+		Provider:            prov,
 		Tools:               rt.dispatcher,
 		Session:             sess,
 		Workspace:           a.workspace,

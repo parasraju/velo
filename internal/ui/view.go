@@ -157,7 +157,11 @@ func (m Model) welcome() string {
 	sb.WriteString(th.Dim.Render("  workspace  "+m.info.Workspace) + "\n")
 	sb.WriteString(th.Dim.Render("  model      "+m.info.Model) + "\n")
 	sb.WriteString(th.Dim.Render("  session    "+m.info.SessionID) + "\n\n")
-	sb.WriteString(th.Dim.Render("  Type a task to begin. :help lists commands. Esc cancels a run, Ctrl+C quits."))
+	sb.WriteString(th.Dim.Render("  Type a task to begin. / opens commands. Esc cancels a run, Ctrl+C quits."))
+	if !m.info.Ready && m.info.Provider != "" {
+		sb.WriteString("\n")
+		sb.WriteString(th.Warning.Render("  No provider connected. / then providers. Gemini asks for an API key."))
+	}
 	return sb.String()
 }
 
@@ -274,7 +278,7 @@ func (m Model) renderNotice() string {
 	if m.running {
 		return m.theme.Dim.Render("  esc cancels the run")
 	}
-	return m.theme.Dim.Render("  enter sends · :help for commands")
+	return m.theme.Dim.Render("  enter sends · / chooses a command")
 }
 
 // View implements tea.Model.
@@ -286,6 +290,12 @@ func (m Model) View() string {
 	switch {
 	case m.pending != nil:
 		transcript = m.renderApprovalModal()
+	case m.showCommands:
+		transcript = m.renderCommands()
+	case m.showProviders:
+		transcript = m.renderProviders()
+	case m.showModels:
+		transcript = m.renderModels()
 	case m.showPicker:
 		transcript = m.renderPicker()
 	case m.showHelp:
@@ -331,6 +341,81 @@ func (m Model) renderApprovalModal() string {
 		th.Accent.Render("[t]") + th.Base.Render(" trust for this session"))
 	box := th.ModalBorder.Width(min(m.width-4, 96)).Padding(1, 2).Render(sb.String())
 	return lipgloss.PlaceHorizontal(m.width, lipgloss.Left, box)
+}
+
+func (m Model) renderCommands() string {
+	th := m.theme
+	var sb strings.Builder
+	sb.WriteString(th.Bold.Render("  commands") + th.Dim.Render("  (↑↓ move · enter select · click a row · esc close)") + "\n\n")
+	for i, item := range commandPalette {
+		cursor := "  "
+		style := th.Base
+		if i == m.commandIdx {
+			cursor = "> "
+			style = th.Accent
+		}
+		sb.WriteString(style.Render(fmt.Sprintf("%s/%-12s %s", cursor, item.label, item.help)) + "\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderProviders() string {
+	th := m.theme
+	var sb strings.Builder
+	sb.WriteString(th.Bold.Render("  providers") + th.Dim.Render("  (↑↓ move · enter or click · esc close)") + "\n\n")
+	if len(m.providers) == 0 {
+		sb.WriteString(th.Dim.Render("  no providers registered"))
+		return sb.String()
+	}
+	for i, row := range m.providers {
+		cursor := "  "
+		style := th.Base
+		if i == m.providerIdx {
+			cursor = "> "
+			style = th.Accent
+		}
+		state := ""
+		switch {
+		case row.Ready:
+			state = "connected"
+		case row.NeedsKey:
+			state = "asks for an API key"
+		}
+		line := cursor + row.Name
+		if state != "" {
+			line += "  " + state
+		}
+		sb.WriteString(style.Render(line) + "\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderModels() string {
+	th := m.theme
+	var sb strings.Builder
+	title := "  models"
+	if m.info.Provider != "" {
+		title += " for " + m.info.Provider
+	}
+	sb.WriteString(th.Bold.Render(title) + th.Dim.Render("  (↑↓ move · enter or click · esc close)") + "\n\n")
+	if len(m.models) == 0 {
+		sb.WriteString(th.Dim.Render("  select a provider first"))
+		return sb.String()
+	}
+	for i, row := range m.models {
+		cursor := "  "
+		style := th.Base
+		if i == m.modelIdx {
+			cursor = "> "
+			style = th.Accent
+		}
+		mark := ""
+		if row.Current {
+			mark = "  current"
+		}
+		sb.WriteString(style.Render(cursor+row.Name+mark) + "\n")
+	}
+	return sb.String()
 }
 
 func (m Model) renderPicker() string {
@@ -379,17 +464,9 @@ func (m Model) renderHelp() string {
 		sb.WriteString(fmt.Sprintf("  %s  %s\n", th.Accent.Render(padded(k[0], 18)), th.Base.Render(k[1])))
 	}
 	sb.WriteString("\n" + th.Bold.Render("  commands") + "\n\n")
-	for _, k := range [][2]string{
-		{":sessions, :s", "browse and resume saved sessions"},
-		{":new", "start a fresh session"},
-		{":status", "show runtime status"},
-		{":config", "show the effective configuration"},
-		{":models", "show the configured model"},
-		{":tools", "list tools"},
-		{":help", "this screen"},
-		{":quit, :exit, :q", "exit velo"},
-	} {
-		sb.WriteString(fmt.Sprintf("  %s  %s\n", th.Accent.Render(padded(k[0], 18)), th.Base.Render(k[1])))
+	sb.WriteString(th.Dim.Render("  / opens this list. Select one; do not type the name.") + "\n\n")
+	for _, item := range commandPalette {
+		sb.WriteString(fmt.Sprintf("  %s  %s\n", th.Accent.Render(padded("/"+item.label, 18)), th.Base.Render(item.help)))
 	}
 	return sb.String()
 }

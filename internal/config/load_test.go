@@ -240,3 +240,41 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 		t.Fatalf("Provider.Model = %q, want env-model", got.Provider.Model)
 	}
 }
+
+func TestUpdateProviderKeepsOtherSettings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := "# keep me\nagent:\n  max_turns: 7\nprovider:\n  name: gemini\n  model: old\n  max_retries: 3\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := UpdateProvider(path, ProviderConfig{
+		Name:      "mock",
+		Model:     "mock-model",
+		APIKeyEnv: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "secret") {
+		t.Fatalf("unexpected secret in config:\n%s", text)
+	}
+	cfg, err := Load(path, noEnv)
+	if err != nil {
+		t.Fatalf("reload: %v\n%s", err, text)
+	}
+	if cfg.Agent.MaxTurns != 7 {
+		t.Fatalf("max turns = %d\n%s", cfg.Agent.MaxTurns, text)
+	}
+	if cfg.Provider.Name != "mock" || cfg.Provider.Model != "mock-model" {
+		t.Fatalf("provider = %+v\n%s", cfg.Provider, text)
+	}
+	if cfg.Provider.MaxRetries != 3 {
+		t.Fatalf("retries = %d\n%s", cfg.Provider.MaxRetries, text)
+	}
+}

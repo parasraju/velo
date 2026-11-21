@@ -46,6 +46,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case providersMsg:
+		if msg.err != nil {
+			m.notice = "providers: " + msg.err.Error()
+			return m, nil
+		}
+		m.providers = msg.rows
+		if m.providerIdx >= len(m.providers) {
+			m.providerIdx = 0
+		}
+		return m, nil
+
+	case modelsMsg:
+		if msg.err != nil {
+			m.notice = "models: " + msg.err.Error()
+			m.showModels = false
+			return m, nil
+		}
+		m.models = msg.rows
+		if len(m.models) == 0 {
+			m.showModels = false
+			m.notice = "select a provider before choosing a model"
+			return m, nil
+		}
+		if m.modelIdx >= len(m.models) {
+			m.modelIdx = 0
+		}
+		return m, nil
+
 	case runDoneMsg:
 		// The terminal RunFinished event drives rendering; this is a safety net
 		// for runs that fail before emitting it.
@@ -56,6 +84,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		if m.showCommands {
+			if idx, ok := clickRow(msg, 3, len(commandPalette)); ok {
+				m.commandIdx = idx
+				return m.runPalette(commandPalette[idx].id)
+			}
+		}
+		if m.showProviders {
+			if idx, ok := clickRow(msg, 3, len(m.providers)); ok {
+				m.providerIdx = idx
+				return m.chooseProvider()
+			}
+		}
+		if m.showModels {
+			if idx, ok := clickRow(msg, 3, len(m.models)); ok {
+				m.modelIdx = idx
+				return m.chooseModel()
+			}
+		}
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
@@ -122,9 +168,46 @@ func (m Model) handleEvent(e events.Event) Model {
 	return m
 }
 
+type paletteItem struct {
+	id, label, help string
+}
+
+var commandPalette = []paletteItem{
+	{"providers", "providers", "choose a provider"},
+	{"models", "models", "choose a model for the selected provider"},
+	{"sessions", "sessions", "browse and resume sessions"},
+	{"new", "new", "start a new session"},
+	{"status", "status", "show runtime status"},
+	{"config", "config", "show configuration"},
+	{"tools", "tools", "list tools"},
+	{"connect", "connect", "enter an API key"},
+	{"help", "help", "show help"},
+	{"quit", "quit", "exit velo"},
+}
+
+func clickRow(msg tea.MouseMsg, first, n int) (int, bool) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft || n <= 0 {
+		return 0, false
+	}
+	idx := msg.Y - first
+	if idx < 0 || idx >= n {
+		return 0, false
+	}
+	return idx, true
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pending != nil {
 		return m.handleApprovalKey(msg)
+	}
+	if m.showCommands {
+		return m.handleCommandKey(msg)
+	}
+	if m.showProviders {
+		return m.handleProviderKey(msg)
+	}
+	if m.showModels {
+		return m.handleModelKey(msg)
 	}
 	if m.showPicker {
 		return m.handlePickerKey(msg)
@@ -142,6 +225,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleExpand()
 		return m, nil
 	case "esc":
+		if m.awaitKey {
+			m.awaitKey = false
+			m.input.Reset()
+			m.notice = "connect cancelled"
+			return m, nil
+		}
 		if m.running {
 			m.ctrl.Cancel()
 			m.appendSystem("cancelling run…")
@@ -170,6 +259,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "?" && m.input.Value() == "" && !m.running {
 		m.showHelp = true
 		return m, nil
+	}
+	if msg.String() == "/" && strings.TrimSpace(m.input.Value()) == "" && !m.running && !m.awaitKey {
+		return m.openCommands()
 	}
 
 	// Keystrokes during a run stay in the draft instead of being discarded.
@@ -265,20 +357,74 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.input.Reset()
-	if strings.HasPrefix(text, ":") {
+	if m.awaitKey {
+		m.awaitKey = false
+		if strings.HasPrefix(text, "/") {
+			m.notice = "connect cancelled"
+			return m, nil
+		}
+		info, msg, err := m.ctrl.ConnectKey(text)
+		if err != nil {
+			m.notice = "connect: " + err.Error()
+			return m, nil
+		}
+		m.info = info
+		m.notice = msg
+		m.appendSystem(msg)
+		return m, nil
+	}
+	if text == "/" {
+		return m.openCommands()
+	}
+	if strings.HasPrefix(text, "/") {
 		return m.command(text)
 	}
 	return m.startRun(text)
 }
 
-func (m Model) command(line string) (tea.Model, tea.Cmd) {
-	switch line {
-	case ":quit", ":exit", ":q":
+func (m Model) openCommands() (tea.Model, tea.Cmd) {
+	m.showCommands = true
+	m.showProviders = false
+	m.showModels = false
+	m.showPicker = false
+	m.showHelp = false
+	m.commandIdx = 0
+	return m, nil
+}
+
+func (m Model) handleCommandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.showCommands = false
+		return m, nil
+	case "up", "k":
+		if m.commandIdx > 0 {
+			m.commandIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.commandIdx < len(commandPalette)-1 {
+			m.commandIdx++
+		}
+		return m, nil
+	case "enter":
+		if m.commandIdx >= 0 && m.commandIdx < len(commandPalette) {
+			return m.runPalette(commandPalette[m.commandIdx].id)
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) runPalette(id string) (tea.Model, tea.Cmd) {
+	m.showCommands = false
+	switch id {
+	case "quit":
 		m.ctrl.Cancel()
 		return m, tea.Quit
-	case ":sessions", ":s":
+	case "sessions":
 		return m.openPicker()
-	case ":new":
+	case "new":
 		if m.running {
 			m.notice = "cannot start a new session during a run"
 			return m, nil
@@ -295,22 +441,186 @@ func (m Model) command(line string) (tea.Model, tea.Cmd) {
 		m.relayout()
 		m.appendSystem("started new session " + shortID(info.SessionID))
 		return m, nil
-	case ":help", ":h":
+	case "help":
 		m.showHelp = true
 		return m, nil
-	case ":status", ":config", ":models", ":tools":
-		name := strings.TrimPrefix(line, ":")
-		text, err := m.ctrl.Report(name)
+	case "providers":
+		return m.openProviders()
+	case "models":
+		return m.openModels()
+	case "connect":
+		m.awaitKey = true
+		m.notice = "enter the API key and press enter. It stays in this process and is not saved. Esc cancels."
+		return m, nil
+	case "status", "config", "tools":
+		text, err := m.ctrl.Report(id)
 		if err != nil {
-			m.notice = name + ": " + err.Error()
+			m.notice = id + ": " + err.Error()
 			return m, nil
 		}
 		m.appendSystem(strings.TrimRight(text, "\n"))
 		return m, nil
 	default:
+		m.notice = "unknown command: /" + id
+		return m, nil
+	}
+}
+
+func (m Model) command(line string) (tea.Model, tea.Cmd) {
+	switch line {
+	case "/quit", "/exit", "/q":
+		return m.runPalette("quit")
+	case "/sessions", "/s":
+		return m.runPalette("sessions")
+	case "/new":
+		return m.runPalette("new")
+	case "/help", "/h":
+		return m.runPalette("help")
+	case "/providers", "/provider":
+		return m.runPalette("providers")
+	case "/models", "/model":
+		return m.runPalette("models")
+	case "/connect":
+		return m.runPalette("connect")
+	case "/status", "/config", "/tools":
+		return m.runPalette(strings.TrimPrefix(line, "/"))
+	default:
+		if strings.HasPrefix(line, "/provider ") {
+			name := strings.TrimSpace(strings.TrimPrefix(line, "/provider "))
+			fields := strings.Fields(name)
+			if len(fields) == 0 {
+				return m.openProviders()
+			}
+			return m.afterProvider(fields[0], true)
+		}
+		if strings.HasPrefix(line, "/model ") {
+			model := strings.TrimSpace(strings.TrimPrefix(line, "/model "))
+			info, msg, err := m.ctrl.UseModel(model)
+			if err != nil {
+				m.notice = err.Error()
+				return m, nil
+			}
+			m.info = info
+			m.notice = msg
+			m.appendSystem(msg)
+			return m, nil
+		}
 		m.notice = "unknown command: " + line
 		return m, nil
 	}
+}
+
+func (m Model) openProviders() (tea.Model, tea.Cmd) {
+	m.showProviders = true
+	m.showPicker = false
+	m.providerIdx = 0
+	ctrl := m.ctrl
+	return m, func() tea.Msg {
+		rows, err := ctrl.ListProviders()
+		return providersMsg{rows: rows, err: err}
+	}
+}
+
+func (m Model) handleProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.showProviders = false
+		return m, nil
+	case "up", "k":
+		if m.providerIdx > 0 {
+			m.providerIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.providerIdx < len(m.providers)-1 {
+			m.providerIdx++
+		}
+		return m, nil
+	case "enter":
+		return m.chooseProvider()
+	}
+	return m, nil
+}
+
+func (m Model) chooseProvider() (tea.Model, tea.Cmd) {
+	if m.providerIdx < 0 || m.providerIdx >= len(m.providers) {
+		return m, nil
+	}
+	row := m.providers[m.providerIdx]
+	m.showProviders = false
+	return m.afterProvider(row.Name, row.NeedsKey)
+}
+
+func (m Model) afterProvider(name string, needsKey bool) (tea.Model, tea.Cmd) {
+	info, msg, err := m.ctrl.UseProvider(name)
+	if err != nil {
+		m.notice = err.Error()
+		return m, nil
+	}
+	m.info = info
+	if needsKey && !info.Ready {
+		m.awaitKey = true
+		m.notice = "API key for " + name + ". Enter it and press enter. It is not saved. Esc cancels."
+		return m, nil
+	}
+	m.notice = msg
+	m.appendSystem(msg)
+	return m, nil
+}
+
+func (m Model) openModels() (tea.Model, tea.Cmd) {
+	m.showModels = true
+	m.showCommands = false
+	m.showProviders = false
+	m.modelIdx = 0
+	ctrl := m.ctrl
+	return m, func() tea.Msg {
+		rows, err := ctrl.ListModels()
+		return modelsMsg{rows: rows, err: err}
+	}
+}
+
+func (m Model) handleModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.showModels = false
+		return m, nil
+	case "up", "k":
+		if m.modelIdx > 0 {
+			m.modelIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.modelIdx < len(m.models)-1 {
+			m.modelIdx++
+		}
+		return m, nil
+	case "enter":
+		return m.chooseModel()
+	}
+	return m, nil
+}
+
+func (m Model) chooseModel() (tea.Model, tea.Cmd) {
+	if m.modelIdx < 0 || m.modelIdx >= len(m.models) {
+		return m, nil
+	}
+	name := m.models[m.modelIdx].Name
+	m.showModels = false
+	info, msg, err := m.ctrl.UseModel(name)
+	if err != nil {
+		m.notice = err.Error()
+		return m, nil
+	}
+	m.info = info
+	if !info.Ready && info.Provider != "" && info.Provider != "mock" {
+		m.awaitKey = true
+		m.notice = "API key for " + info.Provider + ". Enter it and press enter. It is not saved. Esc cancels."
+		return m, nil
+	}
+	m.notice = msg
+	m.appendSystem(msg)
+	return m, nil
 }
 
 func (m Model) openPicker() (tea.Model, tea.Cmd) {

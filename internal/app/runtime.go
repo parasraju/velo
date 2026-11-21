@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"velo/internal/contextmgr"
@@ -15,20 +16,28 @@ import (
 )
 
 type runtimeEnv struct {
-	app        *App
-	prov       provider.Provider
-	policy     *security.Policy
-	repo       *repository.Repository
-	registry   *tools.Registry
-	dispatcher *tools.Dispatcher
-	store      *session.Store
+	app         *App
+	mu          sync.Mutex
+	prov        provider.Provider
+	providerErr string
+	policy      *security.Policy
+	repo        *repository.Repository
+	registry    *tools.Registry
+	dispatcher  *tools.Dispatcher
+	store       *session.Store
 }
 
 func (a *App) newRuntime() (*runtimeEnv, error) {
-	if err := a.checkProviderConfigured(); err != nil {
-		return nil, err
-	}
+	return a.openRuntime(true)
+}
 
+// newInteractiveRuntime opens tools and a session even when no provider is
+// connected, so the terminal can start and the user can select one.
+func (a *App) newInteractiveRuntime() (*runtimeEnv, error) {
+	return a.openRuntime(false)
+}
+
+func (a *App) openRuntime(requireProvider bool) (*runtimeEnv, error) {
 	policy, repo, registry, err := a.buildTools()
 	if err != nil {
 		return nil, err
@@ -53,20 +62,50 @@ func (a *App) newRuntime() (*runtimeEnv, error) {
 		return nil, err
 	}
 
-	prov, err := a.registry.New(a.cfg.Provider.Name, a.providerOptions())
-	if err != nil {
-		return nil, fmt.Errorf("provider %q: %w", a.cfg.Provider.Name, err)
-	}
-
-	return &runtimeEnv{
+	rt := &runtimeEnv{
 		app:        a,
-		prov:       prov,
 		policy:     policy,
 		repo:       repo,
 		registry:   registry,
 		dispatcher: dispatcher,
 		store:      store,
-	}, nil
+	}
+	if err := a.attachProvider(rt); err != nil && requireProvider {
+		return nil, err
+	}
+	return rt, nil
+}
+
+// attachProvider builds the configured provider. A missing key or unfinished
+// config leaves prov nil and records providerErr instead of closing the session.
+func (a *App) attachProvider(rt *runtimeEnv) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.prov != nil {
+		_ = rt.prov.Close()
+		rt.prov = nil
+	}
+	if err := a.checkProviderConfigured(); err != nil {
+		rt.providerErr = err.Error()
+		return err
+	}
+	p, err := a.registry.New(a.cfg.Provider.Name, a.providerOptions())
+	if err != nil {
+		rt.providerErr = err.Error()
+		return fmt.Errorf("provider %q: %w", a.cfg.Provider.Name, err)
+	}
+	rt.prov = p
+	rt.providerErr = ""
+	return nil
+}
+
+func (rt *runtimeEnv) provider() provider.Provider {
+	if rt == nil {
+		return nil
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.prov
 }
 
 func (a *App) buildTools() (*security.Policy, *repository.Repository, *tools.Registry, error) {
@@ -188,10 +227,17 @@ func (a *App) systemPrompt(registry *tools.Registry) string {
 }
 
 func (r *runtimeEnv) Close() error {
-	if r == nil || r.prov == nil {
+	if r == nil {
 		return nil
 	}
-	return r.prov.Close()
+	r.mu.Lock()
+	prov := r.prov
+	r.prov = nil
+	r.mu.Unlock()
+	if prov == nil {
+		return nil
+	}
+	return prov.Close()
 }
 
 func (r *runtimeEnv) createSession() (*session.Session, error) {

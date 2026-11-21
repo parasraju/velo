@@ -65,6 +65,8 @@ type App struct {
 	plain      bool
 	trustMu    sync.Mutex
 	trusted    map[string]struct{}
+	secretMu   sync.Mutex
+	secrets    map[string]string
 }
 
 func New(opts Options) (*App, error) {
@@ -302,10 +304,30 @@ func (a *App) providerOptions() provider.Options {
 		Headers:    a.cfg.Provider.Headers,
 		MaxRetries: a.cfg.Provider.MaxRetries,
 	}
-	if a.cfg.Provider.APIKeyEnv != "" {
-		opts.APIKey, _ = a.lookupEnv(a.cfg.Provider.APIKeyEnv)
+	if envName := a.cfg.Provider.APIKeyEnv; envName != "" {
+		if key, ok := a.secret(envName); ok {
+			opts.APIKey = key
+		} else {
+			opts.APIKey, _ = a.lookupEnv(envName)
+		}
 	}
 	return opts
+}
+
+func (a *App) setSecret(name, value string) {
+	a.secretMu.Lock()
+	defer a.secretMu.Unlock()
+	if a.secrets == nil {
+		a.secrets = make(map[string]string)
+	}
+	a.secrets[name] = value
+}
+
+func (a *App) secret(name string) (string, bool) {
+	a.secretMu.Lock()
+	defer a.secretMu.Unlock()
+	value, ok := a.secrets[name]
+	return value, ok && value != ""
 }
 
 // emit publishes an event to the app's sink, stamping time when unset. A nil

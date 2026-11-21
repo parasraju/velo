@@ -92,7 +92,10 @@ func TestProgramEndToEnd(t *testing.T) {
 		t.Errorf("objective = %q", got)
 	}
 
-	tm.Type(":quit")
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	for i := 1; i < len(commandPalette); i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyDown})
+	}
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(10*time.Second))
 	await("explain the bug", "the bug is real")
